@@ -1,0 +1,61 @@
+name: Test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (linux/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The package must stay pure data and pure functions over the standard
+      # library. A dependency here becomes a dependency of both products, which
+      # is the coupling this module exists to remove — so it fails the build
+      # rather than being caught in review.
+      - name: no non-standard-library dependencies
+        run: |
+          set -euo pipefail
+          # .Standard is the authoritative test; matching on a dot in the path
+          # misfires on stdlib packages like crypto/internal/entropy/v1.0.0.
+          bad=$(GOWORK=off go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./... \
+            | grep -v '^github.com/KazuhaHub/passwall-protocol' || true)
+          if [ -n "$bad" ]; then
+            echo "the protocol module must not depend on anything outside the standard library:"
+            echo "$bad"
+            exit 1
+          fi
+
+      # The harness is a nested module on purpose, so it is NOT built here: it
+      # depends on passwall-node and would put a product in this module's graph.
+      - name: unit tests
+        run: GOWORK=off go test -count=1 ./...
+
+      - name: race
+        run: GOWORK=off go test -race -count=1 ./...
+
+      - name: vet
+        run: GOWORK=off go vet ./...
+
+      # go.mod is a contract with both consumers: a stray requirement or
+      # directive changes their build, so it is checked rather than trusted.
+      - name: go.mod carries no requirements
+        run: |
+          set -euo pipefail
+          if grep -qE '^\s+(require|replace|exclude)' go.mod; then
+            echo "go.mod must not carry requirements, replaces or excludes:"
+            grep -nE '^\s+(require|replace|exclude)' go.mod
+            exit 1
+          fi

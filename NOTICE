@@ -1,0 +1,17 @@
+Passwall-Protocol
+Copyright 2026 Kazuha Mo and the Passwall-Protocol contributors
+
+Licensed under the Apache License, Version 2.0.
+This notice covers Passwall-Protocol's own code. Third-party components retain
+their respective copyright notices and licenses.
+
+PROVENANCE
+The protocol/ package was extracted verbatim from Passwall-Node at tag
+v0.0.1-beta11 (commit 0119a4ec), which is released under the same Apache-2.0
+license and carries the copyright notice below. The only change made during the
+extraction is the Go import path.
+
+Passwall-Node
+Copyright 2026 Kazuha Mo and the Passwall-Node contributors
+
+Licensed under the Apache License, Version 2.0.
