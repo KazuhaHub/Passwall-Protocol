@@ -45,16 +45,40 @@ func AgentUpgradeCapabilities() []string {
 	}
 }
 
-// AssessCompatibility evaluates a durable protocol/capability observation.
+// GenerationRange is the range of wire generations a PRODUCT declares it
+// supports.
+//
+// IT IS THE CALLER'S, NOT THIS PACKAGE'S. This package defines what the wire
+// generations are and what an assessment means; which of them a given binary
+// speaks is a property of that binary. When the two were the same value, adding
+// a generation here silently widened every consumer's support — a shared
+// dependency upgrade would have granted a capability no product had reviewed.
+// A product that supports a new generation now has to say so, and the change is
+// visible in its own repository rather than arriving through a version bump.
+type GenerationRange struct {
+	Min int
+	Max int
+}
+
+// SupportedGenerationRange is the range THIS PACKAGE was compiled against. It is
+// the historical value, kept so the deprecated AssessCompatibility below keeps
+// its exact behaviour. New code should pass its own range to
+// AssessCompatibilityIn.
+func SupportedGenerationRange() GenerationRange {
+	return GenerationRange{Min: MinSupportedProtocolVersion, Max: MaxSupportedProtocolVersion}
+}
+
+// AssessCompatibilityIn evaluates a durable protocol/capability observation
+// against a range the CALLER declares.
+//
 // It is intentionally pure so PSP's server DTO, task admission and migration
 // tooling can all use the same decision without drifting.
-func AssessCompatibility(reported int, capabilities []string) Compatibility {
+func AssessCompatibilityIn(reported int, capabilities []string, supported GenerationRange) Compatibility {
 	effective := EffectiveProtocolVersion(reported)
 	result := Compatibility{
 		ReportedProtocolVersion:  reported,
 		EffectiveProtocolVersion: effective,
-		ProtocolSupported: effective >= MinSupportedProtocolVersion &&
-			effective <= MaxSupportedProtocolVersion,
+		ProtocolSupported:        effective >= supported.Min && effective <= supported.Max,
 	}
 	present := make(map[string]struct{}, len(capabilities))
 	for _, capability := range capabilities {
@@ -69,4 +93,16 @@ func AssessCompatibility(reported int, capabilities []string) Compatibility {
 	}
 	result.AgentUpgrade = result.ProtocolSupported && len(result.MissingAgentUpgrade) == 0
 	return result
+}
+
+// AssessCompatibility evaluates an observation against the range compiled into
+// this package.
+//
+// Deprecated: it lets a shared-library upgrade decide a product's supported
+// generations. Use AssessCompatibilityIn with the caller's own range. This
+// wrapper is kept because removing it is a public API change with its own
+// notice period, and it deliberately keeps the OLD semantics — it does not
+// become "supports everything".
+func AssessCompatibility(reported int, capabilities []string) Compatibility {
+	return AssessCompatibilityIn(reported, capabilities, SupportedGenerationRange())
 }
