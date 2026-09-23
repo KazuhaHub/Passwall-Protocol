@@ -6,15 +6,36 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
+# A PR push supersedes the one before it, so the run in flight is cancelled;
+# separate PRs still run side by side.
+#
+# A MAIN PUSH IS NEVER SUPERSEDED. Both consumers pin this module at a tag, and a
+# tag is cut by hand from a main commit, so every main commit needs a verdict of
+# its own. A main push and a manual run each get their own group,
+# `github.run_id`, and cancel nothing. This is the shape authcore and
+# Passwall-Node settled on after a group keyed on the ref cancelled main runs
+# there. The cost is one extra run of about 33 s when merges arrive together.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Default to no permissions; each job opts in to only what it needs.
+permissions: {}
 
 jobs:
   test:
     name: test (linux/amd64)
     runs-on: ubuntu-latest
+    # A run takes about 33 s. Without a bound, a hang holds the runner for
+    # GitHub's 360-minute default.
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to a commit, as in authcore, so a moved or rewritten
+      # tag cannot change what runs here. These are the versions authcore pins;
+      # the v4/v5 majors this replaced ran on the deprecated Node 20 runtime.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # cache: false. The module is stdlib-only, so there is no go.sum to key on
       # (keying on one warned "Restore cache failed" every run) and nothing to
@@ -23,7 +44,7 @@ jobs:
       # GitHub evicts a cache after 7 idle days, so most runs would miss and
       # then pay to upload it. If runs become daily, key it on go.mod: the
       # compiled stdlib goes stale only when the go line moves.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
@@ -65,6 +86,20 @@ jobs:
 
       - name: vet
         run: GOWORK=off go vet ./...
+
+      # Formatting was a manual step here: c678bd5 lists "gofmt -l clean" in its
+      # evidence, and nothing held the next change to it. The consumers gate on
+      # gofmt in their own CI, and code moves between this module and theirs.
+      # gofmt reads files, not modules, so harness/ is covered too. It costs
+      # well under a second.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
 
       # go.mod is a contract with both consumers: a stray requirement changes
       # their build, so it is checked rather than trusted. Replace and exclude
