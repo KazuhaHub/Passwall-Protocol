@@ -218,6 +218,101 @@ func TestValidateNodeReportRejectsUnsafeWireStates(t *testing.T) {
 	}
 }
 
+// FuzzValidateNodeReport is the control half's counterpart of
+// FuzzValidateHostObservation. ValidateNodeReportBase is the first thing the
+// panel runs on every sync body a node sends, which makes it the widest door
+// this package has onto input from a peer. The cases above pin the rejections
+// someone thought of; this looks for the input nobody did.
+//
+// AN ACCEPTED REPORT MUST SURVIVE ITS OWN WIRE FORMAT. A partial report is
+// written through a second, hand-written shape in MarshalJSON, so a report the
+// validator accepts is re-encoded, decoded and validated again, and the second
+// encoding must be byte-identical to the first. A report that passes on the
+// node and fails on the panel, or that changes on every hop, splits the two
+// sides' view of one round.
+//
+// The seeds are the valid reports the tests above build, so the fuzzer starts
+// past agent_id and the stream states instead of rediscovering them. Plain
+// `go test` runs only the seeds; the weekly workflow does the fuzzing.
+func FuzzValidateNodeReport(fuzz *testing.F) {
+	task := Task{ID: "task-1", Kind: "reality_probe.v1", Args: []byte("probe")}
+	task.InputSHA256 = ComputeTaskInputSHA256(task.Kind, task.Args)
+	succeeded := TaskResult{ID: task.ID, Kind: task.Kind, InputSHA256: task.InputSHA256, OK: true, Result: []byte("ok")}
+	indeterminate := TaskResult{ID: task.ID, Kind: task.Kind, InputSHA256: task.InputSHA256,
+		Indeterminate: true, ErrorCode: "probe_indeterminate", Error: "outcome unknown"}
+	applied := map[string]StreamState{
+		StreamConfig:     {Applied: Version{Epoch: 1, Version: 3}, ETag: ETag(strings.Repeat("ab", 32))},
+		StreamRoster:     {},
+		StreamDirectives: {},
+	}
+	seeds := []NodeReport{
+		{AgentID: "a1", ProtocolVersion: ProtocolVersion1, Have: emptyHave()},
+		{AgentID: "agent-1", Partial: true, Have: emptyHave(),
+			Capabilities: []string{CapabilityTaskExecutionV1, TaskCapability("reality_probe.v1")}},
+		{AgentID: "agent-1", Have: emptyHave(), TaskResults: []TaskResult{{ID: "legacy-1", Error: "legacy failure"}}},
+		{AgentID: "a1", Have: emptyHave(), TaskResults: []TaskResult{succeeded}},
+		{AgentID: "a1", Have: emptyHave(), TaskResults: []TaskResult{indeterminate}},
+		{AgentID: "agent-1", Have: emptyHave(), Capabilities: []string{CapabilityHostTelemetry}, Host: hostPtr(hostSample())},
+		// The accepted shape of each mutation in
+		// TestValidateNodeReportRejectsUnsafeWireStates, in one full report.
+		{
+			AgentID: "a1", ProtocolVersion: ProtocolVersion1, ReportedAtMS: 1789000000000,
+			CoreEngine: "xray", Have: applied,
+			Objects: []ObjectStatus{
+				{Stream: StreamConfig, Key: string(NewListenerKey(1)), State: ObjectApplied, SinceVersion: Version{Epoch: 1, Version: 1}},
+				{Stream: StreamRoster, Key: string(NewClientKey(1)), State: ObjectBlocked,
+					SinceVersion: Version{Epoch: 1, Version: 1}, FirstFailedAtMS: 1, BlockedOn: string(NewListenerKey(1))},
+			},
+			ListenerCounters: []ListenerCounters{{Key: NewListenerKey(1), Present: true, UpBytes: 1, DownBytes: 2}},
+			Clients: []ClientCounters{{Key: NewClientKey(1), Present: true, Gate: GateUnconfigured,
+				LiveIPs: []string{"2001:db8::1", "192.0.2.1"}}},
+			Subjects: []SubjectObservation{{Subject: NewSubjectKey(1), IPLocalCount: 2}},
+			Issues:   []Issue{{Code: "x", Key: "a", Detail: "detail"}},
+		},
+	}
+	for index, seed := range seeds {
+		if err := ValidateNodeReport(seed); err != nil {
+			fuzz.Fatalf("seed %d is rejected, so it seeds nothing past the check that rejects it: %v", index, err)
+		}
+		body, err := json.Marshal(seed)
+		if err != nil {
+			fuzz.Fatal(err)
+		}
+		fuzz.Add(body)
+	}
+
+	fuzz.Fuzz(func(t *testing.T, body []byte) {
+		var report NodeReport
+		if err := json.Unmarshal(body, &report); err != nil {
+			return
+		}
+		if err := ValidateNodeReportBase(report); err != nil {
+			return
+		}
+		wire, err := json.Marshal(report)
+		if err != nil {
+			t.Fatalf("an accepted report failed to encode: %v", err)
+		}
+		var decoded NodeReport
+		if err := json.Unmarshal(wire, &decoded); err != nil {
+			t.Fatalf("an accepted report failed to decode its own encoding: %v\n%s", err, wire)
+		}
+		if err := ValidateNodeReportBase(decoded); err != nil {
+			t.Fatalf("an accepted report became invalid after a round trip: %v\n%s", err, wire)
+		}
+		if before, after := ValidateNodeReport(report), ValidateNodeReport(decoded); (before == nil) != (after == nil) {
+			t.Fatalf("the sender's check changed its verdict across a round trip: before=%v after=%v\n%s", before, after, wire)
+		}
+		again, err := json.Marshal(decoded)
+		if err != nil {
+			t.Fatalf("a round-tripped report failed to encode: %v", err)
+		}
+		if !bytes.Equal(wire, again) {
+			t.Fatalf("an accepted report does not re-encode to the same bytes:\n first=%s\nsecond=%s", wire, again)
+		}
+	})
+}
+
 // The tri-state encoding is the one §8 calls out by name, because the repo
 // already has the collision it forbids: traffic_cap.go returns 0 for "no
 // headroom" and the panel reads 0 as unlimited, so "exhausted" and "no cap"

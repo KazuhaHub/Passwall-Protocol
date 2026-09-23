@@ -1,0 +1,60 @@
+name: Weekly
+
+# What runs here finds new things without a commit to prompt it, so it runs on
+# the calendar rather than on every push. Nothing here is a required check.
+#
+# GitHub disables a schedule after 60 days without activity in the repository,
+# which a module this quiet can reach. The Actions tab says so and re-enables it
+# with one click; workflow_dispatch runs it by hand in the meantime.
+on:
+  schedule:
+    # Mondays at 04:41 UTC: off the hour, when scheduled runs queue, and clear
+    # of PSP's compat-watch at 03:17.
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  weekly:
+    name: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        id: setup
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # PLAIN `go test` NEVER FUZZES. It runs a fuzz target's seeds and nothing
+      # else, so FuzzValidateHostObservation had only ever seen its two. -fuzz
+      # takes one target at a time, hence a step each. Locally, a minute on two
+      # workers put roughly a million inputs through the report target. The
+      # second step runs even when the first fails, so one finding does not
+      # hide another. It does not run when checkout or setup failed: there it
+      # would only stack a second error on the real cause.
+      - name: fuzz ValidateNodeReport
+        run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateNodeReport$' -fuzztime 60s
+
+      - name: fuzz ValidateHostObservation
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateHostObservation$' -fuzztime 60s
+
+      # A failing input is written under protocol/testdata/fuzz/<target>/ and
+      # named in the log, but its bytes are not printed, and the runner is gone
+      # once the job ends. So they are printed here. Committed at that path, the
+      # input becomes a seed that plain `go test` replays on every PR.
+      - name: print the inputs the fuzzer found
+        if: failure()
+        run: |
+          git ls-files --others --exclude-standard -- protocol/testdata \
+            | while IFS= read -r input; do
+                echo "== $input"
+                cat "$input"
+                echo
+              done
