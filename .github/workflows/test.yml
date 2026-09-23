@@ -37,6 +37,11 @@ jobs:
       # the v4/v5 majors this replaced ran on the deprecated Node 20 runtime.
       # Dependabot moves the pins (.github/dependabot.yml).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Full history and every tag, for the API step below: it needs the
+        # latest v* tag and the PR's base. The whole repository is a few
+        # hundred KB.
+        with:
+          fetch-depth: 0
 
       # cache: false. The module is stdlib-only, so there is no go.sum to key on
       # (keying on one warned "Restore cache failed" every run) and nothing to
@@ -120,6 +125,62 @@ jobs:
             | jq -e '((.Require // []) + (.Replace // []) + (.Exclude // [])) | length == 0' >/dev/null; then
             echo "go.mod must not carry requirements, replaces or excludes:"
             go mod edit -json go.mod | jq '{Require, Replace, Exclude}'
+            exit 1
+          fi
+
+      # THE API IS A PROMISE MADE AT A TAG. Both consumers pin a tag and compile
+      # against its exported API, so an incompatible change here shows only
+      # when one of them bumps, and by then the tag is immutable. c678bd5 kept
+      # AssessCompatibility as a deprecated wrapper because removing it "is a
+      # public API change with its own notice period", but nothing enforced
+      # that. This step compares the exported API with the latest v* tag using
+      # apidiff, pinned, and fails on an incompatible change.
+      #
+      # WHEN A BREAK IS INTENDED, copy the lines this step printed into
+      # .github/api-breaks.txt in the same PR. The step fails only on lines that
+      # file does not list, so the break is recorded where review sees it. The
+      # file describes the difference from the latest tag: empty it once the
+      # next tag is cut. Entries that no longer differ are reported, not failed.
+      #
+      # Only on a PR, and only when the PR touches what the result depends on.
+      # Main is reached through PRs. Tests and test data are left out of that,
+      # since the exported API is built without them: a PR that only adds a
+      # test, or commits a fuzz input as a seed, skips the step. Building
+      # apidiff takes about 17 s from cold.
+      - name: exported API is compatible with the latest tag
+        if: github.event_name == 'pull_request'
+        env:
+          GOWORK: "off"
+        run: |
+          set -euo pipefail
+          # HEAD is the PR merged into its base, and HEAD^1 is that base.
+          if git diff --quiet HEAD^1 HEAD -- protocol go.mod .github/api-breaks.txt \
+            ':!*_test.go' ':!**/testdata/**'; then
+            echo "the PR changes nothing the exported API is built from"
+            exit 0
+          fi
+          base=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname | awk 'NR == 1')
+          if [ -z "$base" ]; then
+            echo "no v* tag to compare with"
+            exit 0
+          fi
+          GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/exp/cmd/apidiff@v0.0.0-20260908205506-85c1c2202aba
+          apidiff="$RUNNER_TEMP/bin/apidiff"
+          git worktree add --quiet --detach "$RUNNER_TEMP/base" "$base"
+          (cd "$RUNNER_TEMP/base" && "$apidiff" -m -w "$RUNNER_TEMP/base.api" "$(go list -m)")
+          echo "exported API against $base:"
+          "$apidiff" -m "$RUNNER_TEMP/base.api" "$(go list -m)"
+          "$apidiff" -m -incompatible "$RUNNER_TEMP/base.api" "$(go list -m)" > "$RUNNER_TEMP/breaks"
+          grep -v -e '^#' -e '^[[:space:]]*$' .github/api-breaks.txt > "$RUNNER_TEMP/accepted" || true
+          stale=$(grep -vxFf "$RUNNER_TEMP/breaks" "$RUNNER_TEMP/accepted" || true)
+          if [ -n "$stale" ]; then
+            echo "::notice::.github/api-breaks.txt lists changes that no longer differ from $base; remove them:"
+            echo "$stale"
+          fi
+          unaccepted=$(grep -vxFf "$RUNNER_TEMP/accepted" "$RUNNER_TEMP/breaks" || true)
+          if [ -n "$unaccepted" ]; then
+            echo "::error::incompatible with $base, and not listed in .github/api-breaks.txt:"
+            echo "$unaccepted"
             exit 1
           fi
 
