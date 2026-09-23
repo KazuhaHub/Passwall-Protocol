@@ -35,6 +35,7 @@ jobs:
       # Actions are pinned to a commit, as in authcore, so a moved or rewritten
       # tag cannot change what runs here. These are the versions authcore pins;
       # the v4/v5 majors this replaced ran on the deprecated Node 20 runtime.
+      # Dependabot moves the pins (.github/dependabot.yml).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # cache: false. The module is stdlib-only, so there is no go.sum to key on
