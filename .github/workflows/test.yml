@@ -30,8 +30,18 @@ jobs:
           set -euo pipefail
           # .Standard is the authoritative test; matching on a dot in the path
           # misfires on stdlib packages like crypto/internal/entropy/v1.0.0.
-          bad=$(GOWORK=off go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./... \
-            | grep -v '^github.com/KazuhaHub/passwall-protocol' || true)
+          # -test, because an import that only a _test.go file makes still puts
+          # a requirement in go.mod, and both consumers inherit it. Without it
+          # the gate passed exactly that module. The test variants it adds
+          # ("<pkg> [<pkg>.test]", "<pkg>_test [<pkg>.test]", "<pkg>.test")
+          # start with a package of this module, so the filter drops them.
+          # The filter is anchored where the module path ends: a sibling such
+          # as passwall-protocol-extra shares the prefix and is a dependency.
+          # go list runs on its own line so that a failure fails the step: in
+          # the pipe, "|| true" swallowed it and the gate passed.
+          deps=$(GOWORK=off go list -test -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./...)
+          bad=$(printf '%s\n' "$deps" \
+            | grep -vE '^github\.com/KazuhaHub/passwall-protocol(/|(_test)? |$|\.test$)' || true)
           if [ -n "$bad" ]; then
             echo "the protocol module must not depend on anything outside the standard library:"
             echo "$bad"
@@ -49,13 +59,22 @@ jobs:
       - name: vet
         run: GOWORK=off go vet ./...
 
-      # go.mod is a contract with both consumers: a stray requirement or
-      # directive changes their build, so it is checked rather than trusted.
+      # go.mod is a contract with both consumers: a stray requirement changes
+      # their build, so it is checked rather than trusted. Replace and exclude
+      # are refused with it: consumers ignore both, and with nothing required
+      # they act on nothing here, so one only turns up ahead of a dependency.
+      # Retract is left alone: it withdraws a bad tag of this module, and it
+      # changes which version go get picks, not what any version builds.
+      # It is read through the toolchain's own parser, not matched as text: the
+      # grep this replaces wanted whitespace BEFORE the keyword, and the go
+      # command writes every directive at column 0, so it never fired on a
+      # go.mod the go command wrote.
       - name: go.mod carries no requirements
         run: |
           set -euo pipefail
-          if grep -qE '^\s+(require|replace|exclude)' go.mod; then
+          if ! go mod edit -json go.mod \
+            | jq -e '((.Require // []) + (.Replace // []) + (.Exclude // [])) | length == 0' >/dev/null; then
             echo "go.mod must not carry requirements, replaces or excludes:"
-            grep -nE '^\s+(require|replace|exclude)' go.mod
+            go mod edit -json go.mod | jq '{Require, Replace, Exclude}'
             exit 1
           fi
