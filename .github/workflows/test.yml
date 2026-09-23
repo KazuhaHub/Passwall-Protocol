@@ -80,8 +80,9 @@ jobs:
       # One run, under -race. Nothing here starts a goroutine or uses sync,
       # atomics or channels, and no file is built only with or without race, so
       # a plain run exercises nothing this one does not.
-      # The harness is a nested module on purpose, so it is NOT built here: it
-      # depends on passwall-node and would put a product in this module's graph.
+      # The harness is a nested module on purpose, so ./... does not reach it: it
+      # depends on passwall-node, which must stay out of this module's graph.
+      # harness.yml runs it on its own.
       - name: unit tests (race)
         run: GOWORK=off go test -race -count=1 ./...
 

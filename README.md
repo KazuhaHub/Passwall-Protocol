@@ -57,7 +57,12 @@ is hash input — changing it would change every task digest.
 `harness/` is a **nested module, not part of this module.** It compiles both this
 package and the original `passwall-node/protocol` side by side and asserts their
 observable behaviour still matches, which is only possible while the original
-exists. It is excluded from this module's CI and is not a dependency of anything.
+exists. It is not a dependency of anything, and `go test ./...` from the root
+does not reach it. CI runs it in a workflow of its own, `harness (equivalence
+with beta11)`, on each PR that changes the package's sources, `go.mod` or
+`harness/`. It is not a required check: a change meant to diverge from beta11
+fails it by design, and that PR records the divergence in the harness or
+retires it.
 
 ## Development
 
