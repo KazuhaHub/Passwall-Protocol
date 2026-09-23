@@ -37,10 +37,10 @@ jobs:
       # the v4/v5 majors this replaced ran on the deprecated Node 20 runtime.
       # Dependabot moves the pins (.github/dependabot.yml).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # Full history and every tag, for the API step below: it needs the
-        # latest v* tag and the PR's base. The whole repository is a few
-        # hundred KB.
         with:
+          # Full history and every tag, for the actionlint and API steps
+          # below: both need the PR's base, and the API step the latest v*
+          # tag. The whole repository is a few hundred KB.
           fetch-depth: 0
 
       # cache: false. The module is stdlib-only, so there is no go.sum to key on
@@ -107,6 +107,25 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
+      # The workflows are code as well, and nothing here checked them: a typo
+      # in an expression or a quoting slip in a run: script surfaced only when
+      # the job ran. actionlint checks syntax and expressions, and it
+      # shellchecks every run: script with the runner's preinstalled
+      # shellcheck. It is pinned to the version Passwall-Node runs.
+      #
+      # Only on a PR that changes a workflow, since its verdict depends on
+      # nothing else. Building it takes about 9 s from cold.
+      - name: actionlint
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          # HEAD is the PR merged into its base, and HEAD^1 is that base.
+          if git diff --quiet HEAD^1 HEAD -- .github/workflows; then
+            echo "the PR changes no workflow"
+            exit 0
+          fi
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
       # go.mod is a contract with both consumers: a stray requirement changes
       # their build, so it is checked rather than trusted. Replace and exclude
@@ -187,13 +206,13 @@ jobs:
       # THE FLOOR IS NOT WHAT SHIPS. setup-go installs exactly the go line,
       # 1.26.0, which proves the line is honest, but neither consumer builds
       # this code with it: PSP's go.mod names toolchain go1.27.1, and PN's names
-      # go1.26.8. The golden digests and canonical encodings here come out of
-      # encoding/json, crypto/sha256 and net/netip. A change there would first
-      # show as a PSP or PN failure, far from its cause. So the suite runs again
-      # under each consumer's toolchain. Both consumers keep go 1.26.0 as their
-      # go line, as this module does, so the GODEBUG defaults match theirs too.
-      # Move the list when a consumer moves its toolchain line, here and in
-      # weekly.yml's govulncheck step.
+      # go1.26.8. The golden digests, canonical encodings and canonical-address
+      # checks here rest on encoding/json, crypto/sha256 and net/netip. A change
+      # there would first show as a PSP or PN failure, far from its cause. So
+      # the suite runs again under each consumer's toolchain. Both consumers
+      # keep go 1.26.0 as their go line, as this module does, so the GODEBUG
+      # defaults match theirs too. Move the list when a consumer moves its
+      # toolchain line, here and in weekly.yml's govulncheck step.
       #
       # Only on a main push or a manual run. A consumer can pick a change up
       # only from a tag, and tags are cut from main. A PR keeps its gate on the
