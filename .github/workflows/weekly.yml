@@ -17,7 +17,7 @@ permissions: {}
 
 jobs:
   weekly:
-    name: fuzz
+    name: fuzz and govulncheck
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -44,6 +44,35 @@ jobs:
       - name: fuzz ValidateHostObservation
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateHostObservation$' -fuzztime 60s
+
+      # THE STANDARD LIBRARY IS THIS MODULE'S ONE DEPENDENCY, and it has
+      # advisories. Which standard library is the consumer's choice, so the scan
+      # runs under each consumer's toolchain, the list the consumer-toolchain
+      # step in test.yml keeps, rather than under the go line. A finding means
+      # this code, which parses what a peer sends, reaches a vulnerable symbol
+      # under a toolchain a consumer ships. The fix is a toolchain bump in that
+      # consumer. The consumers' own scans overlap this one only in part: each
+      # sees the module at the tag it pins, and only what it calls. This one
+      # scans main from every exported entry point, so it also covers what the
+      # next tag will carry.
+      #
+      # govulncheck is built with the newest toolchain on the list. Built with
+      # go1.26.0, it fails to load go1.27.1's standard library ("unknown field
+      # rfd in struct literal of type splicePipe"). v1.8.0 is the version PN,
+      # PSP and SAP pin. Each toolchain is scanned even if another reports.
+      - name: govulncheck (consumer toolchains)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          GOWORK: "off"
+        run: |
+          set -euo pipefail
+          GOTOOLCHAIN=go1.27.1 GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          status=0
+          for toolchain in go1.27.1 go1.26.8; do
+            echo "== $toolchain"
+            GOTOOLCHAIN=$toolchain "$RUNNER_TEMP/bin/govulncheck" ./... || status=1
+          done
+          exit "$status"
 
       # A failing input is written under protocol/testdata/fuzz/<target>/ and
       # named in the log, but its bytes are not printed, and the runner is gone

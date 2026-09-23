@@ -192,7 +192,8 @@ jobs:
       # show as a PSP or PN failure, far from its cause. So the suite runs again
       # under each consumer's toolchain. Both consumers keep go 1.26.0 as their
       # go line, as this module does, so the GODEBUG defaults match theirs too.
-      # Move the list when a consumer moves its toolchain line.
+      # Move the list when a consumer moves its toolchain line, here and in
+      # weekly.yml's govulncheck step.
       #
       # Only on a main push or a manual run. A consumer can pick a change up
       # only from a tag, and tags are cut from main. A PR keeps its gate on the
