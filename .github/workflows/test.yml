@@ -16,10 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # cache: false. The module is stdlib-only, so there is no go.sum to key on
+      # (keying on one warned "Restore cache failed" every run) and nothing to
+      # download. A cache would hold only the compiled standard library, about
+      # 120 MB for race and vet. Runs here are few and often concurrent, and
+      # GitHub evicts a cache after 7 idle days, so most runs would miss and
+      # then pay to upload it. If runs become daily, key it on go.mod: the
+      # compiled stdlib goes stale only when the go line moves.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       # The package must stay pure data and pure functions over the standard
       # library. A dependency here becomes a dependency of both products, which
@@ -48,12 +55,12 @@ jobs:
             exit 1
           fi
 
+      # One run, under -race. Nothing here starts a goroutine or uses sync,
+      # atomics or channels, and no file is built only with or without race, so
+      # a plain run exercises nothing this one does not.
       # The harness is a nested module on purpose, so it is NOT built here: it
       # depends on passwall-node and would put a product in this module's graph.
-      - name: unit tests
-        run: GOWORK=off go test -count=1 ./...
-
-      - name: race
+      - name: unit tests (race)
         run: GOWORK=off go test -race -count=1 ./...
 
       - name: vet
