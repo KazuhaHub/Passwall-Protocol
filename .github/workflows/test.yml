@@ -122,3 +122,28 @@ jobs:
             go mod edit -json go.mod | jq '{Require, Replace, Exclude}'
             exit 1
           fi
+
+      # THE FLOOR IS NOT WHAT SHIPS. setup-go installs exactly the go line,
+      # 1.26.0, which proves the line is honest, but neither consumer builds
+      # this code with it: PSP's go.mod names toolchain go1.27.1, and PN's names
+      # go1.26.8. The golden digests and canonical encodings here come out of
+      # encoding/json, crypto/sha256 and net/netip. A change there would first
+      # show as a PSP or PN failure, far from its cause. So the suite runs again
+      # under each consumer's toolchain. Both consumers keep go 1.26.0 as their
+      # go line, as this module does, so the GODEBUG defaults match theirs too.
+      # Move the list when a consumer moves its toolchain line.
+      #
+      # Only on a main push or a manual run. A consumer can pick a change up
+      # only from a tag, and tags are cut from main. A PR keeps its gate on the
+      # floor, and does not pay about 20 s per toolchain: a 75 MB download,
+      # and the standard library compiled again. Without -race, for the reason
+      # the unit-test step gives. It is a signal, not a gate: nothing ties a tag
+      # to this run, so whoever cuts one checks that the commit's run is green.
+      - name: unit tests (consumer toolchains)
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          for toolchain in go1.27.1 go1.26.8; do
+            GOTOOLCHAIN=$toolchain go version
+            GOTOOLCHAIN=$toolchain GOWORK=off go test -count=1 ./...
+          done
