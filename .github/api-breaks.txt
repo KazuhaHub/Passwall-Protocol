@@ -1,0 +1,12 @@
+# Incompatible API changes accepted since the latest v* tag, one per line,
+# exactly as the "exported API is compatible with the latest tag" step in
+# .github/workflows/test.yml prints them, e.g.
+#
+#   - ./protocol.AssessCompatibility: removed
+#
+# That step fails a PR on any incompatible change apidiff reports against the
+# latest tag unless it is listed here. When a break is intended, list it in the
+# same PR, so it is reviewed as a decision instead of found by a consumer after
+# the tag is cut. Empty the list once the next tag is cut: it describes the
+# difference from the latest tag, and the step reports entries that no longer
+# differ.

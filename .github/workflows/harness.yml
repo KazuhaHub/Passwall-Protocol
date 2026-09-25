@@ -1,0 +1,68 @@
+name: Harness
+
+# THE EXTRACTION HARNESS HAS A WORKFLOW OF ITS OWN, AND IT IS NOT A REQUIRED
+# CHECK. harness/ is a separate module. It compiles this package next to the
+# passwall-node/protocol package it was copied from, at v0.0.1-beta11, and
+# compares what the two do: constants, task-input digests, compatibility
+# verdicts (including the deprecated AssessCompatibility wrapper, which c678bd5
+# promised keeps its old semantics) and canonical JSON. Its go.mod requires a
+# product, but running it from its own directory leaves the root module's
+# graph, and test.yml's gates, exactly as they were.
+#
+# It is kept out of test.yml's job for what its failure means. It compares
+# against a FROZEN original, so a change here that is meant to diverge from
+# beta11 fails it by design. That failure is the review signal: PSP's
+# compatibility policy still covers nodes from beta1 to beta11, so a
+# divergence from beta11 should be a decision rather than a side effect. The
+# PR answers it by recording the divergence in the harness, or by retiring the
+# harness. Inside the required check, it would block exactly those PRs.
+#
+# ONLY ON A PR THAT CHANGES WHAT IT COMPARES. harness/go.sum freezes the
+# original, so the verdict rests on the package's non-test sources, go.mod and
+# harness/ alone. The paths filter leaves every other PR without the job, not
+# even its start-up; this is Passwall-Node's installer.yml shape for a check
+# that is not required. Main is reached through PRs, so a main push would
+# repeat the verdict its PR already got. workflow_dispatch runs it by hand.
+on:
+  pull_request:
+    paths:
+      - "protocol/**"
+      - "!protocol/**/*_test.go"
+      - "!protocol/**/testdata/**"
+      - go.mod
+      - "harness/**"
+      - .github/workflows/harness.yml
+  workflow_dispatch:
+
+# test.yml's rule: a PR push supersedes the one before it, and a manual run
+# gets a group of its own and cancels nothing.
+concurrency:
+  group: harness-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  # Cost: about 8 s of work from a cold cache (one 600 KB download, and one
+  # package from each side), plus about 15 s of start-up, in parallel with
+  # test.yml, and only on the PRs the filter above lets through.
+  harness:
+    name: harness (equivalence with beta11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cache: false, as in test.yml. The only download is one 600 KB zip,
+      # cheaper to fetch from the module proxy than a cache of compiled stdlib
+      # is to restore.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: harness/go.mod
+          cache: false
+
+      - name: extracted package behaves like the original
+        working-directory: harness
+        run: GOWORK=off go test -count=1 ./...

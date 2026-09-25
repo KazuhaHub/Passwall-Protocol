@@ -1,0 +1,27 @@
+# Dependency updates for passwall-protocol.
+#
+# The actions in the workflows are pinned to commits, and a pin nobody moves
+# goes stale silently: the checkout and setup-go tags this repository used
+# until now were still on the Node 20 majors. This entry is what moves them,
+# and it rewrites the version comment next to each pin along with the SHA.
+#
+# THERE IS NO gomod ENTRY, on purpose, for either module.
+#
+#   - The root module has no requirements, and test.yml fails the build if it
+#     gains one. There is nothing for Dependabot to update.
+#   - harness/ requires passwall-node at v0.0.1-beta11 because that tag is the
+#     original the extraction was copied from, and the harness only means
+#     something against that tag. Any bump would compare this package with a
+#     different original, and nothing in a Dependabot PR would say so. Nor is
+#     the newest version by semver the newest release: pre-release identifiers
+#     compare as text, so `go list -m passwall-node@latest` resolves to beta9,
+#     older than beta11. The harness ships nothing, and its go.sum holds
+#     passwall-node alone, so no security update is waiting there either.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"

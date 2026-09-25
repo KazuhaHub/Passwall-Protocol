@@ -6,15 +6,42 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
+# A PR push supersedes the one before it, so the run in flight is cancelled;
+# separate PRs still run side by side.
+#
+# A MAIN PUSH IS NEVER SUPERSEDED. Both consumers pin this module at a tag, and a
+# tag is cut by hand from a main commit, so every main commit needs a verdict of
+# its own. A main push and a manual run each get their own group,
+# `github.run_id`, and cancel nothing. This is the shape authcore and
+# Passwall-Node settled on after a group keyed on the ref cancelled main runs
+# there. The cost is one extra run of about 33 s when merges arrive together.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Default to no permissions; each job opts in to only what it needs.
+permissions: {}
 
 jobs:
   test:
     name: test (linux/amd64)
     runs-on: ubuntu-latest
+    # A run takes about 33 s. Without a bound, a hang holds the runner for
+    # GitHub's 360-minute default.
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to a commit, as in authcore, so a moved or rewritten
+      # tag cannot change what runs here. These are the versions authcore pins;
+      # the v4/v5 majors this replaced ran on the deprecated Node 20 runtime.
+      # Dependabot moves the pins (.github/dependabot.yml).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history and every tag, for the actionlint and API steps
+          # below: both need the PR's base, and the API step the latest v*
+          # tag. The whole repository is a few hundred KB.
+          fetch-depth: 0
 
       # cache: false. The module is stdlib-only, so there is no go.sum to key on
       # (keying on one warned "Restore cache failed" every run) and nothing to
@@ -23,7 +50,7 @@ jobs:
       # GitHub evicts a cache after 7 idle days, so most runs would miss and
       # then pay to upload it. If runs become daily, key it on go.mod: the
       # compiled stdlib goes stale only when the go line moves.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
@@ -58,13 +85,47 @@ jobs:
       # One run, under -race. Nothing here starts a goroutine or uses sync,
       # atomics or channels, and no file is built only with or without race, so
       # a plain run exercises nothing this one does not.
-      # The harness is a nested module on purpose, so it is NOT built here: it
-      # depends on passwall-node and would put a product in this module's graph.
+      # The harness is a nested module on purpose, so ./... does not reach it: it
+      # depends on passwall-node, which must stay out of this module's graph.
+      # harness.yml runs it on its own.
       - name: unit tests (race)
         run: GOWORK=off go test -race -count=1 ./...
 
       - name: vet
         run: GOWORK=off go vet ./...
+
+      # Formatting was a manual step here: c678bd5 lists "gofmt -l clean" in its
+      # evidence, and nothing held the next change to it. The consumers gate on
+      # gofmt in their own CI, and code moves between this module and theirs.
+      # gofmt reads files, not modules, so harness/ is covered too. It costs
+      # well under a second.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # The workflows are code as well, and nothing here checked them: a typo
+      # in an expression or a quoting slip in a run: script surfaced only when
+      # the job ran. actionlint checks syntax and expressions, and it
+      # shellchecks every run: script with the runner's preinstalled
+      # shellcheck. It is pinned to the version Passwall-Node runs.
+      #
+      # Only on a PR that changes a workflow, since its verdict depends on
+      # nothing else. Building it takes about 9 s from cold.
+      - name: actionlint
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          # HEAD is the PR merged into its base, and HEAD^1 is that base.
+          if git diff --quiet HEAD^1 HEAD -- .github/workflows; then
+            echo "the PR changes no workflow"
+            exit 0
+          fi
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
       # go.mod is a contract with both consumers: a stray requirement changes
       # their build, so it is checked rather than trusted. Replace and exclude
@@ -85,3 +146,85 @@ jobs:
             go mod edit -json go.mod | jq '{Require, Replace, Exclude}'
             exit 1
           fi
+
+      # THE API IS A PROMISE MADE AT A TAG. Both consumers pin a tag and compile
+      # against its exported API, so an incompatible change here shows only
+      # when one of them bumps, and by then the tag is immutable. c678bd5 kept
+      # AssessCompatibility as a deprecated wrapper because removing it "is a
+      # public API change with its own notice period", but nothing enforced
+      # that. This step compares the exported API with the latest v* tag using
+      # apidiff, pinned, and fails on an incompatible change.
+      #
+      # WHEN A BREAK IS INTENDED, copy the lines this step printed into
+      # .github/api-breaks.txt in the same PR. The step fails only on lines that
+      # file does not list, so the break is recorded where review sees it. The
+      # file describes the difference from the latest tag: empty it once the
+      # next tag is cut. Entries that no longer differ are reported, not failed.
+      #
+      # Only on a PR, and only when the PR touches what the result depends on.
+      # Main is reached through PRs. Tests and test data are left out of that,
+      # since the exported API is built without them: a PR that only adds a
+      # test, or commits a fuzz input as a seed, skips the step. Building
+      # apidiff takes about 17 s from cold.
+      - name: exported API is compatible with the latest tag
+        if: github.event_name == 'pull_request'
+        env:
+          GOWORK: "off"
+        run: |
+          set -euo pipefail
+          # HEAD is the PR merged into its base, and HEAD^1 is that base.
+          if git diff --quiet HEAD^1 HEAD -- protocol go.mod .github/api-breaks.txt \
+            ':!*_test.go' ':!**/testdata/**'; then
+            echo "the PR changes nothing the exported API is built from"
+            exit 0
+          fi
+          base=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname | awk 'NR == 1')
+          if [ -z "$base" ]; then
+            echo "no v* tag to compare with"
+            exit 0
+          fi
+          GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/exp/cmd/apidiff@v0.0.0-20260908205506-85c1c2202aba
+          apidiff="$RUNNER_TEMP/bin/apidiff"
+          git worktree add --quiet --detach "$RUNNER_TEMP/base" "$base"
+          (cd "$RUNNER_TEMP/base" && "$apidiff" -m -w "$RUNNER_TEMP/base.api" "$(go list -m)")
+          echo "exported API against $base:"
+          "$apidiff" -m "$RUNNER_TEMP/base.api" "$(go list -m)"
+          "$apidiff" -m -incompatible "$RUNNER_TEMP/base.api" "$(go list -m)" > "$RUNNER_TEMP/breaks"
+          grep -v -e '^#' -e '^[[:space:]]*$' .github/api-breaks.txt > "$RUNNER_TEMP/accepted" || true
+          stale=$(grep -vxFf "$RUNNER_TEMP/breaks" "$RUNNER_TEMP/accepted" || true)
+          if [ -n "$stale" ]; then
+            echo "::notice::.github/api-breaks.txt lists changes that no longer differ from $base; remove them:"
+            echo "$stale"
+          fi
+          unaccepted=$(grep -vxFf "$RUNNER_TEMP/accepted" "$RUNNER_TEMP/breaks" || true)
+          if [ -n "$unaccepted" ]; then
+            echo "::error::incompatible with $base, and not listed in .github/api-breaks.txt:"
+            echo "$unaccepted"
+            exit 1
+          fi
+
+      # THE FLOOR IS NOT WHAT SHIPS. setup-go installs exactly the go line,
+      # 1.26.0, which proves the line is honest, but neither consumer builds
+      # this code with it: PSP's go.mod names toolchain go1.27.1, and PN's names
+      # go1.26.8. The golden digests, canonical encodings and canonical-address
+      # checks here rest on encoding/json, crypto/sha256 and net/netip. A change
+      # there would first show as a PSP or PN failure, far from its cause. So
+      # the suite runs again under each consumer's toolchain. Both consumers
+      # keep go 1.26.0 as their go line, as this module does, so the GODEBUG
+      # defaults match theirs too. Move the list when a consumer moves its
+      # toolchain line, here and in weekly.yml's govulncheck step.
+      #
+      # Only on a main push or a manual run. A consumer can pick a change up
+      # only from a tag, and tags are cut from main. A PR keeps its gate on the
+      # floor, and does not pay about 20 s per toolchain: a 75 MB download,
+      # and the standard library compiled again. Without -race, for the reason
+      # the unit-test step gives. It is a signal, not a gate: nothing ties a tag
+      # to this run, so whoever cuts one checks that the commit's run is green.
+      - name: unit tests (consumer toolchains)
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          for toolchain in go1.27.1 go1.26.8; do
+            GOTOOLCHAIN=$toolchain go version
+            GOTOOLCHAIN=$toolchain GOWORK=off go test -count=1 ./...
+          done

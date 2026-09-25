@@ -1,0 +1,89 @@
+name: Weekly
+
+# What runs here finds new things without a commit to prompt it, so it runs on
+# the calendar rather than on every push. Nothing here is a required check.
+#
+# GitHub disables a schedule after 60 days without activity in the repository,
+# which a module this quiet can reach. The Actions tab says so and re-enables it
+# with one click; workflow_dispatch runs it by hand in the meantime.
+on:
+  schedule:
+    # Mondays at 04:41 UTC: off the hour, when scheduled runs queue, and clear
+    # of PSP's compat-watch at 03:17.
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  weekly:
+    name: fuzz and govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        id: setup
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # PLAIN `go test` NEVER FUZZES. It runs a fuzz target's seeds and nothing
+      # else, so FuzzValidateHostObservation had only ever seen its two. -fuzz
+      # takes one target at a time, hence a step each. Locally, a minute on two
+      # workers put roughly a million inputs through the report target. The
+      # second step runs even when the first fails, so one finding does not
+      # hide another. It does not run when checkout or setup failed: there it
+      # would only stack a second error on the real cause.
+      - name: fuzz ValidateNodeReport
+        run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateNodeReport$' -fuzztime 60s
+
+      - name: fuzz ValidateHostObservation
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateHostObservation$' -fuzztime 60s
+
+      # THE STANDARD LIBRARY IS THIS MODULE'S ONE DEPENDENCY, and it has
+      # advisories. Which standard library is the consumer's choice, so the scan
+      # runs under each consumer's toolchain, the list the consumer-toolchain
+      # step in test.yml keeps, rather than under the go line. A finding means
+      # this code, which parses what a peer sends, reaches a vulnerable symbol
+      # under a toolchain a consumer ships. The fix is a toolchain bump in that
+      # consumer. The consumers' own scans overlap this one only in part: each
+      # sees the module at the tag it pins, and only what it calls. This one
+      # scans main from every exported entry point, so it also covers what the
+      # next tag will carry.
+      #
+      # govulncheck is built with the newest toolchain on the list. Built with
+      # go1.26.0, it fails to load go1.27.1's standard library ("unknown field
+      # rfd in struct literal of type splicePipe"). v1.8.0 is the version PN,
+      # PSP and SAP pin. Each toolchain is scanned even if another reports.
+      - name: govulncheck (consumer toolchains)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          GOWORK: "off"
+        run: |
+          set -euo pipefail
+          GOTOOLCHAIN=go1.27.1 GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          status=0
+          for toolchain in go1.27.1 go1.26.8; do
+            echo "== $toolchain"
+            GOTOOLCHAIN=$toolchain "$RUNNER_TEMP/bin/govulncheck" ./... || status=1
+          done
+          exit "$status"
+
+      # A failing input is written under protocol/testdata/fuzz/<target>/ and
+      # named in the log, but its bytes are not printed, and the runner is gone
+      # once the job ends. So they are printed here. Committed at that path, the
+      # input becomes a seed that plain `go test` replays on every PR.
+      - name: print the inputs the fuzzer found
+        if: failure()
+        run: |
+          git ls-files --others --exclude-standard -- protocol/testdata \
+            | while IFS= read -r input; do
+                echo "== $input"
+                cat "$input"
+                echo
+              done
