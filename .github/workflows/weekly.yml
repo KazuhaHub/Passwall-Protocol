@@ -45,6 +45,14 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateHostObservation$' -fuzztime 60s
 
+      - name: fuzz ValidateDestinationPolicy
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateDestinationPolicy$' -fuzztime 60s
+
+      - name: fuzz ValidatePolicyStatus
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidatePolicyStatus$' -fuzztime 60s
+
       # THE STANDARD LIBRARY IS THIS MODULE'S ONE DEPENDENCY, and it has
       # advisories. Which standard library is the consumer's choice, so the scan
       # runs under each consumer's toolchain, the list the consumer-toolchain

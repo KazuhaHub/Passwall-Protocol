@@ -66,6 +66,32 @@ retires it.
 
 ## Development
 
+### Destination policies (additive v1 contract)
+
+`ConfigBody.Policy` and `NodeReport.PolicyStatus` are optional and require
+`policy.destination.v1`. Nil policy preserves the v0.2.0 configuration bytes;
+full and partial reports both retain policy status. Producers validate before
+sending; receivers validate status separately from `ValidateNodeReportBase` so
+bad optional observations cannot block control synchronization.
+
+`ValidateDestinationPolicy` enforces explicit scoped catch-all rules, canonical
+sorted sets and bounded rules, domains, regular expressions, CIDRs, subjects and
+encoded bytes. Rule order is preserved in validation, previews and digests.
+`MatchDestination` is a pure destination preview with shadowed-rule evidence;
+it never resolves DNS and cannot inspect BitTorrent traffic. An applicable
+unknown protocol rule before a known outcome returns `untestable` rather than
+promising that outcome. IDNA and registrable-domain computation belong to the
+products, not this standard-library-only module. Shared destination and Xray
+sniffing vectors live in `protocol/conformance`.
+
+This intentionally extends the frozen beta11 API. The extraction harness still
+checks the unchanged legacy shapes with the optional fields absent; it does not
+prove destination-policy interoperability. The new conformance and consumer
+tests cover that extension. It does not change the wire generation or agent
+upgrade capability requirements. Audit observations follow in a separate stage.
+
+### Checks
+
 ```bash
 go test ./...          # unit and conformance
 go test -race ./...
