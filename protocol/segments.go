@@ -43,6 +43,8 @@ type ConfigBody struct {
 	// agent reports the resulting CoreVersion. The zero value is accepted for
 	// protocol-v1 peers and resolves to the catalog's recommended release.
 	Core CoreSelection `json:"core"`
+	// Omitted for older agents or absent policy: v0.2.0 config bytes stay exact.
+	Policy *DestinationPolicy `json:"policy,omitempty"`
 }
 
 type CoreSelection struct {
