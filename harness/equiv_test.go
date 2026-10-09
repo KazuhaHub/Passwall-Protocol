@@ -38,6 +38,26 @@ func TestConstantsAreIdentical(t *testing.T) {
 	}
 }
 
+// Optional policy/audit extensions intentionally diverge from beta11. Keep
+// comparing the original encodings with those fields absent, in both shapes.
+func TestFullAndPartialLegacyReportsWithoutExtensions(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		oldReport := old.NodeReport{AgentID: "legacy-agent", Partial: partial, Have: map[string]old.StreamState{}}
+		newReport := new_.NodeReport{AgentID: "legacy-agent", Partial: partial, Have: map[string]new_.StreamState{}}
+		oldJSON, err := json.Marshal(oldReport)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newJSON, err := json.Marshal(newReport)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(oldJSON) != string(newJSON) {
+			t.Fatalf("partial=%v: old=%s new=%s", partial, oldJSON, newJSON)
+		}
+	}
+}
+
 // The task input digest is the value a node and a panel must agree on exactly:
 // it is what makes a replayed task the same task and a changed task a different
 // one. It is computed over a domain-separated byte string, so a changed domain
