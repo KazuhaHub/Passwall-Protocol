@@ -88,7 +88,46 @@ This intentionally extends the frozen beta11 API. The extraction harness still
 checks the unchanged legacy shapes with the optional fields absent; it does not
 prove destination-policy interoperability. The new conformance and consumer
 tests cover that extension. It does not change the wire generation or agent
-upgrade capability requirements. Audit observations follow in a separate stage.
+upgrade capability requirements.
+
+### Audit observations (additive v1 contract)
+
+`NodeReport.Audit` is optional and is retained on full and partial reports.
+Sending any audit requires `audit.hits.v1`; `usage` also requires
+`audit.usage.v1`, including batches carrying only loss counters. Neither is an
+agent-upgrade requirement and installing this module enables neither capability.
+Nil audit preserves the legacy report encodings.
+
+`ValidateAuditObservation` validates one frozen batch for one UTC hour, collection
+revision and kind: `block`, `observe`, `trial` or `usage`. It enforces kind/action
+separation, positive counts, ordered timestamps inside that hour, unique aggregate
+keys, at most 4,096 hit rows or 8,192 usage rows, and a 1 MiB encoded subtree.
+Trial rows carry an exact group rule with an empty subject and zero port; the
+node must collapse destinations to eTLD+1 or `(ip)` before aggregation. Usage
+sites also exclude IP literals. IDNA, hostname normalization and public suffix
+calculation belong to the node; this module validates the supplied result and
+never recomputes the registrable domain.
+
+Senders validate audit separately before constructing a report, dropping a bad
+subtree rather than preventing control synchronization. Receivers isolate its
+decoding as well as validation: `ValidateNodeReportBase` deliberately ignores
+it. Products use injected clocks to enforce the shared 48-hour replay and
+one-hour future-skew limits, and the receiver separately requires its current
+collection revision. First-receipt batch deduplication lasts 72 hours.
+
+The node's aggregates, pending batches and loss counters are all in memory.
+Retries preserve the batch ID and frozen contents. Restart can lose the whole
+unacknowledged 48-hour backlog; sync success does not prove database persistence.
+This is best-effort telemetry, not a reliable audit trail. Counter-only batches
+retain bounded loss evidence when no event row survives.
+
+This is stage 2a, stacked on the destination-policy stage 1a while it is under
+review. Stage 1a must merge, pass main checks and publish `v0.3.0` separately;
+stage 2a then targets `v0.4.0` after its own main checks. These tags have not been
+published by this change. The beta11 harness continues to verify unchanged
+legacy reports with both optional extensions absent. It intentionally cannot
+prove policy or audit interoperability; new unit/fuzz tests and subsequent
+Node/PSP integration cover those extensions.
 
 ### Checks
 

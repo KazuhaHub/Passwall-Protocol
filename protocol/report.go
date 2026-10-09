@@ -113,8 +113,9 @@ type NodeReport struct {
 	// that is regenerated every interval; replaying it after a reconnect would
 	// deliver a stale machine's numbers as if they were current. The panel
 	// tolerates a gap rather than making the data plane wait for a metric.
-	Host         *HostObservation `json:"host,omitempty"`
-	PolicyStatus *PolicyStatus    `json:"policy_status,omitempty"`
+	Host         *HostObservation  `json:"host,omitempty"`
+	PolicyStatus *PolicyStatus     `json:"policy_status,omitempty"`
+	Audit        *AuditObservation `json:"audit,omitempty"`
 
 	// Issues are conditions the agent cannot reconcile by itself. This is
 	// CONTESTED's outlet (§5, hole 4): the terminal action is not to fix it,
@@ -167,17 +168,18 @@ func (r NodeReport) MarshalJSON() ([]byte, error) {
 		// shape. A field added to NodeReport alone silently disappears from every
 		// partial report, and the symptom is a dashboard that fills in bursts and
 		// is mysteriously blank in between.
-		Host         *HostObservation `json:"host,omitempty"`
-		PolicyStatus *PolicyStatus    `json:"policy_status,omitempty"`
-		Issues       []Issue          `json:"issues,omitempty"`
-		TaskResults  []TaskResult     `json:"task_results,omitempty"`
+		Host         *HostObservation  `json:"host,omitempty"`
+		PolicyStatus *PolicyStatus     `json:"policy_status,omitempty"`
+		Audit        *AuditObservation `json:"audit,omitempty"`
+		Issues       []Issue           `json:"issues,omitempty"`
+		TaskResults  []TaskResult      `json:"task_results,omitempty"`
 	}
 	return json.Marshal(partialReport{
 		AgentID: r.AgentID, ProtocolVersion: r.ProtocolVersion,
 		ReportedAtMS: r.ReportedAtMS, AgentVersion: r.AgentVersion,
 		CoreEngine: r.CoreEngine, CoreVersion: r.CoreVersion, CoreState: r.CoreState,
 		Partial: true, Have: r.Have, Capabilities: r.Capabilities,
-		Host: r.Host, PolicyStatus: r.PolicyStatus, Issues: r.Issues, TaskResults: r.TaskResults,
+		Host: r.Host, PolicyStatus: r.PolicyStatus, Audit: r.Audit, Issues: r.Issues, TaskResults: r.TaskResults,
 	})
 }
 

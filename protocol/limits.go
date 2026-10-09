@@ -6,6 +6,19 @@ package protocol
 // generic HTTP middleware (and vice versa).
 const MaxSyncBodyBytes = int64(16 << 20)
 
+// Audit bounds apply to one frozen subtree, not the whole control report.
+// Products enforce age and collection revision separately with injected clocks.
+// Retain first-receipt deduplication longer than the entire accepted age window.
+const (
+	MaxAuditHits             = 4096
+	MaxAuditUsage            = 8192
+	MaxAuditObservationBytes = 1 << 20
+	AuditHourMS              = int64(3_600_000)
+	MaxAuditReplayAgeMS      = 48 * AuditHourMS
+	MaxAuditFutureSkewMS     = AuditHourMS
+	AuditBatchRetentionMS    = 72 * AuditHourMS
+)
+
 // Destination-policy bounds apply to the whole policy, across all rules.
 const (
 	MaxDestinationRules       = 256

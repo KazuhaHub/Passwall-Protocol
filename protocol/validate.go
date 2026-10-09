@@ -145,6 +145,17 @@ func ValidateNodeReport(report NodeReport) error {
 			return fmt.Errorf("policy_status: %w", err)
 		}
 	}
+	if report.Audit != nil {
+		if !hasCapability(report.Capabilities, CapabilityAuditHits) {
+			return fmt.Errorf("audit observation without %s capability", CapabilityAuditHits)
+		}
+		if report.Audit.Kind == "usage" && !hasCapability(report.Capabilities, CapabilityAuditUsage) {
+			return fmt.Errorf("audit usage without %s capability", CapabilityAuditUsage)
+		}
+		if err := ValidateAuditObservation(*report.Audit); err != nil {
+			return fmt.Errorf("audit: %w", err)
+		}
+	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is
 		// what the cadence produces on most rounds.
