@@ -634,3 +634,36 @@ func FuzzValidateHostObservation(fuzz *testing.F) {
 		}
 	})
 }
+
+// Old agents omit the counter, while a new idle agent explicitly reports zero.
+// These must remain distinguishable throughout JSON and validation.
+func TestUnexpectedExitTelemetryIsOptionalAndInt64Bounded(t *testing.T) {
+	sample := hostSample()
+	for _, count := range []*uint64{nil, new(uint64)} {
+		sample.Runtime.CoreUnexpectedExitCount = count
+		if err := ValidateHostObservation(sample); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded HostObservation
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if (decoded.Runtime.CoreUnexpectedExitCount == nil) != (count == nil) {
+			t.Fatal("lost absence versus measured zero")
+		}
+	}
+	tooLarge := uint64(1) << 63
+	sample.Runtime.CoreUnexpectedExitCount = &tooLarge
+	if ValidateHostObservation(sample) == nil {
+		t.Fatal("accepted a counter that cannot be stored as BIGINT")
+	}
+	sample.Runtime.CoreUnexpectedExitCount = nil
+	sample.Runtime.LastCoreUnexpectedExitAtMS = maxUnixMilli + 1
+	if ValidateHostObservation(sample) == nil {
+		t.Fatal("accepted an out-of-range exit time")
+	}
+}

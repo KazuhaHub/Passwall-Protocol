@@ -360,17 +360,22 @@ type ProcessMetrics struct {
 // because that is a control-plane outcome delivered as a task result and
 // counting it here would make every rejected task look like a network fault.
 type RuntimeObservation struct {
-	AgentStartedAtMS        int64   `json:"agent_started_at_ms"`
-	CoreRestartCount        uint64  `json:"core_restart_count"`
-	LastSyncSuccessAtMS     int64   `json:"last_sync_success_at_ms,omitempty"`
-	LastSyncFailureAtMS     int64   `json:"last_sync_failure_at_ms,omitempty"`
-	ConsecutiveSyncFailures uint64  `json:"consecutive_sync_failures"`
-	SyncSuccessCount        uint64  `json:"sync_success_count"`
-	SyncFailureCount        uint64  `json:"sync_failure_count"`
-	LastRoundTripMS         *uint64 `json:"last_round_trip_ms,omitempty"`
-	LastRequestBytes        *uint64 `json:"last_request_bytes,omitempty"`
-	LastResponseBytes       *uint64 `json:"last_response_bytes,omitempty"`
-	CollectorDurationMS     uint64  `json:"collector_duration_ms"`
+	AgentStartedAtMS int64  `json:"agent_started_at_ms"`
+	CoreRestartCount uint64 `json:"core_restart_count"`
+	// CoreUnexpectedExitCount excludes configuration deployments, upgrades and
+	// shutdown. Nil means this agent cannot distinguish those from failures.
+	// The counter resets with AgentStartedAtMS, just like CoreRestartCount.
+	CoreUnexpectedExitCount    *uint64 `json:"core_unexpected_exit_count,omitempty"`
+	LastCoreUnexpectedExitAtMS int64   `json:"last_core_unexpected_exit_at_ms,omitempty"`
+	LastSyncSuccessAtMS        int64   `json:"last_sync_success_at_ms,omitempty"`
+	LastSyncFailureAtMS        int64   `json:"last_sync_failure_at_ms,omitempty"`
+	ConsecutiveSyncFailures    uint64  `json:"consecutive_sync_failures"`
+	SyncSuccessCount           uint64  `json:"sync_success_count"`
+	SyncFailureCount           uint64  `json:"sync_failure_count"`
+	LastRoundTripMS            *uint64 `json:"last_round_trip_ms,omitempty"`
+	LastRequestBytes           *uint64 `json:"last_request_bytes,omitempty"`
+	LastResponseBytes          *uint64 `json:"last_response_bytes,omitempty"`
+	CollectorDurationMS        uint64  `json:"collector_duration_ms"`
 }
 
 // TuningObservation is READ-ONLY host network tuning state, from fixed proc

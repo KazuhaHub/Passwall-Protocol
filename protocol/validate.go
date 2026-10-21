@@ -1061,6 +1061,7 @@ func validateRuntimeObservation(runtime RuntimeObservation) error {
 	}{
 		{"runtime.last_sync_success_at_ms", runtime.LastSyncSuccessAtMS},
 		{"runtime.last_sync_failure_at_ms", runtime.LastSyncFailureAtMS},
+		{"runtime.last_core_unexpected_exit_at_ms", runtime.LastCoreUnexpectedExitAtMS},
 	} {
 		// Zero is legal here and means "has not happened yet" — the one place a
 		// zero timestamp is meaningful, and the reason this field is checked as
@@ -1090,6 +1091,7 @@ func validateRuntimeObservation(runtime RuntimeObservation) error {
 		{"runtime.last_round_trip_ms", runtime.LastRoundTripMS},
 		{"runtime.last_request_bytes", runtime.LastRequestBytes},
 		{"runtime.last_response_bytes", runtime.LastResponseBytes},
+		{"runtime.core_unexpected_exit_count", runtime.CoreUnexpectedExitCount},
 	} {
 		if field.value == nil {
 			continue
