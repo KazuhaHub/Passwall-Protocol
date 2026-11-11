@@ -6,6 +6,17 @@ package protocol
 // generic HTTP middleware (and vice versa).
 const MaxSyncBodyBytes = int64(16 << 20)
 
+// Destination-policy bounds apply to the whole policy, across all rules.
+const (
+	MaxDestinationRules       = 256
+	MaxDestinationDomains     = 50000
+	MaxDestinationRegexps     = 256
+	MaxDestinationCIDRs       = 20000
+	MaxDestinationSubjects    = 50000
+	MaxDestinationPolicyBytes = 4 << 20
+	MaxPolicyStatusListeners  = 256
+)
+
 const (
 	// Node credentials are opaque bearer values. The bounds are shared by the
 	// agent signer and PSP authentication boundary so the wire cannot drift.

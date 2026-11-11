@@ -137,6 +137,14 @@ func ValidateNodeReport(report NodeReport) error {
 	if err := ValidateNodeReportBase(report); err != nil {
 		return err
 	}
+	if report.PolicyStatus != nil {
+		if !hasCapability(report.Capabilities, CapabilityDestinationPolicy) {
+			return fmt.Errorf("policy status without %s capability", CapabilityDestinationPolicy)
+		}
+		if err := ValidatePolicyStatus(*report.PolicyStatus); err != nil {
+			return fmt.Errorf("policy_status: %w", err)
+		}
+	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is
 		// what the cadence produces on most rounds.
