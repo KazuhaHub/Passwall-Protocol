@@ -124,6 +124,12 @@ type NodeReport struct {
 	// are replayed until a sync round trip succeeds, so a lost response cannot
 	// turn an executed side effect into an endlessly repeated task.
 	TaskResults []TaskResult `json:"task_results,omitempty"`
+
+	// PolicyStatus is what the agent did with the destination policy it was
+	// sent. Absent means nothing to say this round, never "no policy": a status
+	// from an agent that did not advertise CapabilityDestinationPolicy is a
+	// producer bug, which ValidateNodeReport refuses on the sender's side.
+	PolicyStatus *PolicyStatus `json:"policy_status,omitempty"`
 }
 
 // MarshalJSON gives partial and full reports deliberately different shapes.
@@ -169,6 +175,9 @@ func (r NodeReport) MarshalJSON() ([]byte, error) {
 		Host        *HostObservation `json:"host,omitempty"`
 		Issues      []Issue          `json:"issues,omitempty"`
 		TaskResults []TaskResult     `json:"task_results,omitempty"`
+		// PolicyStatus is carried for the same reason as Host: it is an
+		// observation, not an enumeration, so a partial report may carry it.
+		PolicyStatus *PolicyStatus `json:"policy_status,omitempty"`
 	}
 	return json.Marshal(partialReport{
 		AgentID: r.AgentID, ProtocolVersion: r.ProtocolVersion,
@@ -176,6 +185,7 @@ func (r NodeReport) MarshalJSON() ([]byte, error) {
 		CoreEngine: r.CoreEngine, CoreVersion: r.CoreVersion, CoreState: r.CoreState,
 		Partial: true, Have: r.Have, Capabilities: r.Capabilities,
 		Host: r.Host, Issues: r.Issues, TaskResults: r.TaskResults,
+		PolicyStatus: r.PolicyStatus,
 	})
 }
 

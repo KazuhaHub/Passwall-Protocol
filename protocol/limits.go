@@ -95,3 +95,26 @@ const (
 	// identity rather than a range to normalise.
 	SampleIDBytes = 32
 )
+
+// Destination policy bounds. A policy is a control-plane document the node
+// compiles into core routing, so each class of entry is capped separately: one
+// class must not be able to spend the whole MaxPolicyBytes allowance, and the
+// compiled rule set has to stay small enough for the core to hold in memory.
+// The sums are over the whole policy, not per rule: PSP splits one operator
+// rule into several (the x<k> suffix), and a per-rule cap would let the split
+// route around it.
+const (
+	MaxPolicyRules       = 256
+	MaxPolicyDomains     = 50000
+	MaxPolicyRegexps     = 256
+	MaxPolicyCIDRs       = 20000
+	MaxPolicySourceCIDRs = 60000
+	// MaxPolicySubjects bounds Subjects summed over every rule plus Exempt.
+	MaxPolicySubjects = 50000
+	MaxPolicyInbounds = 4096
+	// MaxPolicyBytes bounds the canonical JSON of the policy, the same bytes the
+	// digest is taken over.
+	MaxPolicyBytes = 4 << 20
+	// MaxPolicyStatusListeners bounds PolicyStatus.Listeners.
+	MaxPolicyStatusListeners = 256
+)

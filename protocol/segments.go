@@ -43,6 +43,12 @@ type ConfigBody struct {
 	// agent reports the resulting CoreVersion. The zero value is accepted for
 	// protocol-v1 peers and resolves to the catalog's recommended release.
 	Core CoreSelection `json:"core"`
+	// Policy is the destination policy, present only for an agent that
+	// advertised CapabilityDestinationPolicy. omitempty is load-bearing: a nil
+	// Policy must serialise byte-identically to v0.2.x, because the config ETag
+	// is a hash of these bytes and a single new byte would make every agent in
+	// the fleet re-apply a config that did not change.
+	Policy *DestinationPolicy `json:"policy,omitempty"`
 }
 
 type CoreSelection struct {

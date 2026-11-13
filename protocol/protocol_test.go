@@ -253,6 +253,11 @@ func FuzzValidateNodeReport(fuzz *testing.F) {
 		{AgentID: "a1", Have: emptyHave(), TaskResults: []TaskResult{succeeded}},
 		{AgentID: "a1", Have: emptyHave(), TaskResults: []TaskResult{indeterminate}},
 		{AgentID: "agent-1", Have: emptyHave(), Capabilities: []string{CapabilityHostTelemetry}, Host: hostPtr(hostSample())},
+		{AgentID: "agent-1", Have: emptyHave(), Capabilities: []string{CapabilityDestinationPolicy},
+			PolicyStatus: &PolicyStatus{Digest: strings.Repeat("ab", 32), State: PolicyStateApplied}},
+		{AgentID: "agent-1", Partial: true, Have: emptyHave(), Capabilities: []string{CapabilityDestinationPolicy},
+			PolicyStatus: &PolicyStatus{State: PolicyStateRejected, IssueCode: IssueDestinationPolicySniffingInsufficient,
+				Listeners: []ListenerKey{NewListenerKey(1)}}},
 		// The accepted shape of each mutation in
 		// TestValidateNodeReportRejectsUnsafeWireStates, in one full report.
 		{
