@@ -64,6 +64,51 @@ with beta11)`, on each PR that changes the package's sources, `go.mod` or
 fails it by design, and that PR records the divergence in the harness or
 retires it.
 
+## Destination policy
+
+`ConfigBody.Policy` carries a destination policy (block, allow and observe
+rules over domains, destination and source CIDRs, ports, network and sniffed
+protocols), and `NodeReport.PolicyStatus` is the node's answer. Both are gated
+by the capability `policy.destination.v1`: PSP sends a policy only to an agent
+that advertised it, so an agent that did not sees a config byte-identical to
+v0.2.x. It is **not** an upgrade capability and is not in
+`AgentUpgradeCapabilities`; lacking it never holds an agent back from upgrading.
+
+What is shared beyond the types: `ValidateDestinationPolicy`,
+`ValidatePolicyStatus`, `PolicyDigest`, `CheckXraySniffing` (can this inbound's
+sniffing supply what the policy needs), `MatchDestination` (a pure trace of
+which rule a connection would hit) and `PrivateDestinationCIDRs()` (the table
+behind `private`, taken from xray-core). `XraySniffingInjection()`
+is the sniffing object a node writes into an inbound whose sniffing is off.
+Note that it sets `routeOnly` false, so Xray then connects to the sniffed host
+rather than the address the client asked for. `conformance.SniffingVectors` and
+`conformance.DestinationMatchVectors` pin the last two for every implementation.
+
+### Limits of destination rules
+
+- **Trailing dot.** xray-core hands matchers the host as written, so
+  `example.com.` passes `domain:`, `full:` and an anchored `regexp:`. When a
+  policy has a block rule over domains, the node adds a built-in rule
+  (`psp-trailing-dot`) that blocks every hostname ending in a dot. It sits after
+  the exempt list and the global allows and before the block rules, so it blocks
+  the dotted form for every subject that is not exempt or allowed by a global
+  allow that matches it as written, **and it defeats group allow exceptions for
+  the dotted form**. It fails closed, and that is by design: the alternative is
+  a hole in every matcher kind. `MatchDestination` shows it as a step with
+  `Builtin: "trailing_dot"`.
+- **No name resolution.** Hostnames are never matched against `cidrs` or
+  `private`; `MatchDestination` says so with `NoteHostnameSkipsIPRules`. Xray's
+  own fallback that blocks private addresses after resolution exists only in the
+  freedom outbound, only for connections that arrived through a vless, vmess,
+  trojan, hysteria, wireguard or shadowsocks inbound, and only after the
+  operator's own final rules. In newer cores it checks after dialing (a client can
+  still probe whether an internal port is open) and is skipped entirely for a
+  handler with `sockopt.dialerProxy`. Do not rely on it. sing-box has no such
+  fallback.
+- **Search-list expansion.** A dotless hostname can be expanded by the node's DNS
+  search list (common under Docker and Kubernetes), so the connection can go to
+  a name the domain rules never saw. Domain rules judge the name the client sent.
+
 ## Development
 
 ```bash

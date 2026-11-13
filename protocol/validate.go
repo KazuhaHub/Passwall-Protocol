@@ -137,6 +137,18 @@ func ValidateNodeReport(report NodeReport) error {
 	if err := ValidateNodeReportBase(report); err != nil {
 		return err
 	}
+	// Like a host sample, a policy status without its capability is a producer
+	// bug, not version skew. It is bound here and not in the base check: the
+	// receiver validates the subtree in isolation, so a bad status cannot cost
+	// a node its report.
+	if report.PolicyStatus != nil {
+		if !hasCapability(report.Capabilities, CapabilityDestinationPolicy) {
+			return fmt.Errorf("policy status without %s capability", CapabilityDestinationPolicy)
+		}
+		if err := ValidatePolicyStatus(*report.PolicyStatus); err != nil {
+			return fmt.Errorf("policy_status: %w", err)
+		}
+	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is
 		// what the cadence produces on most rounds.
