@@ -21,9 +21,11 @@ const (
 	// SniffForResolvedIPs: the policy resolves hostnames at routing time
 	// (DestinationPolicy.Resolve is ResolveOnDemand) and has IP rules, so the
 	// name the router resolves must be the name the connection goes to. It asks
-	// for nothing to be turned on: sniffing that is off or metadata-only changes
-	// no target and is fine. What it refuses is routeOnly, which routes by the
-	// sniffed name but connects to the requested address; see CheckXraySniffing.
+	// for nothing to be turned on, and sniffing that is off or metadata-only is
+	// fine (metadataOnly runs only the fakedns sniffer, which replaces the
+	// target itself, so the name judged is the name reached). What it refuses is
+	// a sniffed name used for routing only, while the connection goes to the
+	// requested address; see CheckXraySniffing.
 	SniffForResolvedIPs
 )
 
@@ -164,8 +166,9 @@ func CheckXraySniffing(raw []byte, need SniffNeed) (SniffVerdict, string, error)
 		// routeOnly: with it, the router resolves the sniffed name while the
 		// connection goes to the requested address, so a fake SNI chooses which
 		// addresses the IP rules judge (xray-core features/routing/dns/context.go
-		// prefers the domain over the real IP).
-		if need&SniffForResolvedIPs != 0 && sniffing.RouteOnly {
+		// prefers the domain over the real IP). It only happens if some destOverride
+		// entry can accept a sniffed domain: see routesSniffedName.
+		if need&SniffForResolvedIPs != 0 && sniffing.RouteOnly && routesSniffedName(sniffing.DestOverride) {
 			return SniffInsufficient, "route_only_resolve", nil
 		}
 		return SniffOK, "", nil
@@ -314,4 +317,20 @@ func validateXrayIPRule(rule string) error {
 		}
 	}
 	return nil
+}
+
+// routesSniffedName is whether routeOnly can put a sniffed name into the route
+// target. In xray-core's dispatcher (app/dispatcher/default.go) the route target
+// is set only after shouldOverride accepts a sniffed domain for one of the
+// destOverride entries, and only when the protocol is not fakedns. An empty list
+// accepts nothing, and "fakedns" alone does not either: a fakedns result
+// replaces the target itself rather than the route target. Any other entry
+// (http, tls, quic, and "fakedns+others", whose result can be one of those) can.
+func routesSniffedName(override stringList) bool {
+	for _, entry := range override {
+		if strings.ToLower(entry) != "fakedns" {
+			return true
+		}
+	}
+	return false
 }

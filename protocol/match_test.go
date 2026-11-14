@@ -181,7 +181,8 @@ func TestMatch_OnDemandEqualsReferenceWithIPs(t *testing.T) {
 		{"ipv4-mapped is unmapped", MatchInput{Target: "a.example", Resolved: []string{"::ffff:10.1.1.1"}}, MatchBlock, "p2", "10.0.0.0/8"},
 		{"public resolution reaches the group", MatchInput{Target: "a.example", Subject: "usr_1", Resolved: []string{"8.8.8.8"}}, MatchBlock, "g1", ""},
 		{"group member allow", MatchInput{Target: "member.example", Subject: "usr_1", Resolved: []string{"8.8.8.8"}}, MatchAllow, "g1x1", "full:member.example"},
-		{"private beats the group allow", MatchInput{Target: "member.example", Subject: "usr_1", Resolved: []string{"10.0.0.1"}}, MatchBlock, "p2", "10.0.0.0/8"},
+		{"a blocked cidr beats the group allow", MatchInput{Target: "member.example", Subject: "usr_1", Resolved: []string{"10.0.0.1"}}, MatchBlock, "p2", "10.0.0.0/8"},
+		{"private beats the group allow", MatchInput{Target: "member.example", Subject: "usr_1", Resolved: []string{"172.16.0.1"}}, MatchBlock, "p3", "172.16.0.0/12"},
 		{"observe last", MatchInput{Target: "a.example", Resolved: []string{"100.1.1.1"}}, MatchObserve, "p4", "100.0.0.0/10"},
 		{"nothing hits", MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8"}}, MatchDefault, "", ""},
 		{"an address target is matched directly and Resolved is ignored", MatchInput{Target: "10.2.2.2", Resolved: []string{"8.8.8.8"}}, MatchBlock, "p2", "10.0.0.0/8"},
@@ -304,34 +305,51 @@ func TestReport_NeverChangesAVerdictAcrossResolvedInputs(t *testing.T) {
 		{ID: "p2", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}},
 		{ID: "p3", Action: RuleBlock, Private: true},
 		{ID: "p4", Action: RuleBlock, Domains: []string{"domain:bad.example"}},
+		{ID: "g1x1", Action: RuleAllow, Subjects: []SubjectKey{"usr_1"}, Domains: []string{"full:member.example"}, CIDRs: []string{"8.8.8.0/24"}},
+		{ID: "g1", Action: RuleBlock, Subjects: []SubjectKey{"usr_1"}, CatchAll: true},
 	}
-	report := []DestinationRule{enforce[0]}
-	for _, rule := range enforce[1:] {
+	// The report form keeps allows where they are and turns every block into an
+	// observe rule in the last phase, after the group allows. A group catch-all
+	// becomes a catch-all observe (a trial), and a phase-5 domain observe comes
+	// after the IP blocks it follows in enforce mode.
+	report := []DestinationRule{enforce[0], enforce[4]}
+	catchAll := enforce[5]
+	catchAll.Action = RuleObserve
+	report = append(report, catchAll)
+	for _, rule := range enforce[1:4] {
 		rule.Action = RuleObserve
 		report = append(report, rule)
 	}
+	report = append(report, DestinationRule{ID: "p5", Action: RuleObserve, Domains: []string{"full:obs.example"}})
 	for _, mode := range []ResolveMode{ResolveAsIs, ResolveOnDemand} {
 		e := &DestinationPolicy{Rules: enforce, Resolve: mode}
 		r := &DestinationPolicy{Rules: report, Resolve: mode}
 		if err := ValidateDestinationPolicy(r); err != nil {
 			t.Fatal(err)
 		}
-		for _, target := range []string{"a.example", "ok.example", "x.bad.example", "10.1.1.1", "8.8.8.8", "192.0.2.4"} {
+		for _, target := range []string{"a.example", "ok.example", "x.bad.example", "member.example", "obs.example", "10.1.1.1", "8.8.8.8", "192.0.2.4"} {
 			for _, resolved := range [][]string{nil, {}, {"8.8.8.8"}, {"10.1.1.1"}, {"192.0.2.9"}, {"8.8.8.8", "127.0.0.1"}, {"fd00::1"}} {
-				in := MatchInput{Target: target, Resolved: resolved}
-				ev, rv := MatchDestination(e, in), MatchDestination(r, in)
-				switch ev.Verdict {
-				case MatchBlock:
-					if rv.Verdict != MatchObserve && rv.Verdict != MatchDefault {
-						t.Fatalf("%s %q %v: enforce blocks, report says %s", mode, target, resolved, rv.Verdict)
+				for _, subject := range []SubjectKey{"", "usr_1"} {
+					in := MatchInput{Target: target, Resolved: resolved, Subject: subject}
+					ev, rv := MatchDestination(e, in), MatchDestination(r, in)
+					// Observe is an allow that is recorded, so it is the same verdict
+					// as default or allow for what the connection may do.
+					norm := func(v MatchVerdict) MatchVerdict {
+						if v == MatchObserve {
+							return MatchDefault
+						}
+						return v
 					}
-				default:
-					if rv.Verdict != ev.Verdict {
-						t.Fatalf("%s %q %v: enforce %s, report %s", mode, target, resolved, ev.Verdict, rv.Verdict)
+					if ev.Verdict == MatchBlock {
+						if rv.Verdict == MatchBlock {
+							t.Fatalf("%s %q %v %q: enforce blocks, report blocks", mode, target, resolved, subject)
+						}
+					} else if norm(rv.Verdict) != norm(ev.Verdict) {
+						t.Fatalf("%s %q %v %q: enforce %s, report %s", mode, target, resolved, subject, ev.Verdict, rv.Verdict)
 					}
-				}
-				if rv.Verdict == MatchBlock {
-					t.Fatalf("report-only blocked %q %v", target, resolved)
+					if rv.Verdict == MatchBlock {
+						t.Fatalf("report-only blocked %q %v", target, resolved)
+					}
 				}
 			}
 		}

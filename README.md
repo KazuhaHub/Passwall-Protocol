@@ -91,20 +91,21 @@ purpose: running every rule without addresses first reorders rules, so a
 report-only rule could change a verdict and a CIDR block could be skipped in
 front of a group member's allow. AsIs is encoded as the absence of the field, so
 existing policy digests do not change. A non-AsIs value may be sent only to an
-agent that declared **`policy.resolve.v1`**, meaning it compiles `Resolve` on
+agent that declared **`policy.destination.resolve.v1`**, meaning it compiles `Resolve` on
 every engine it runs; an older agent ignores the unknown field and would
 silently run AsIs. It is not an upgrade capability either. A policy that needs
 `on_demand` also needs `SniffForResolvedIPs` from `CheckXraySniffing`: nothing is
 injected, sniffing that is off or `metadataOnly` is fine, and an inbound with
-`routeOnly: true` is insufficient (`route_only_resolve`).
+`routeOnly: true` whose `destOverride` can accept a sniffed name (anything but
+an empty list or `fakedns` alone) is insufficient (`route_only_resolve`). Xray's
+`domainStrategy` is router-wide, so one such inbound keeps the whole node AsIs.
 
 What is shared beyond the types: `ValidateDestinationPolicy`,
 `ValidatePolicyStatus`, `PolicyDigest`, `CheckXraySniffing` (can this inbound's
 sniffing supply what the policy needs), `MatchDestination` (a pure trace of
-which rule a connection would hit) and `PrivateDestinationCIDRs()` (the table
-behind `private`, taken from xray-core; under `on_demand` it takes the
-hostname's addresses as `MatchInput.Resolved`, and never resolves anything
-itself). `XraySniffingInjection()`
+which rule a connection would hit; under `on_demand` it takes the hostname's
+addresses as `MatchInput.Resolved` and never resolves anything itself) and `PrivateDestinationCIDRs()` (the table
+behind `private`, taken from xray-core). `XraySniffingInjection()`
 is the sniffing object a node writes into an inbound whose sniffing is off.
 Note that it sets `routeOnly` false, so Xray then connects to the sniffed host
 rather than the address the client asked for. `conformance.SniffingVectors` and
@@ -144,14 +145,21 @@ rather than the address the client asked for. `conformance.SniffingVectors` and
     another. sing-box dials the addresses it matched.
   - *`routeOnly: true` inbounds cannot run it.* There the sniffed name replaces
     the real target for the lookup while the connection still goes to the real
-    address, so a fake SNI would choose the addresses that are judged. Such an
-    inbound stays AsIs (`SniffForResolvedIPs` is insufficient).
+    address, so a fake SNI would choose the addresses that are judged
+    (`SniffForResolvedIPs` is insufficient). Xray's `domainStrategy` is
+    router-wide, so such an inbound keeps the whole node AsIs, not just itself.
   - *Any resolved address is a match.* A block is conservative; a CIDR **allow**
     is permissive, because the dial may use another address.
-  - *Cost.* One extra lookup per hostname connection that reaches an IP rule.
+  - *Cost.* Xray: one uncached lookup at routing, for each hostname connection
+    that reaches an IP rule, plus freedom's own lookup when it dials. sing-box:
+    one cached lookup that the dial reuses (about nothing extra for an allowed
+    connection).
   - *The trace needs the addresses.* PSP's resolver is not the node's, so
-    `MatchDestination` resolves nothing: without `Resolved` the IP rules are
-    untestable and the result is conditional (`NoteHostnameNeedsResolution`).
+    `MatchDestination` resolves nothing and takes the addresses as
+    `MatchInput.Resolved`: nil (not given) leaves the IP rules untestable and the
+    result conditional (`NoteHostnameNeedsResolution`); non-nil and empty means
+    the lookup failed (a miss, `NoteResolutionFailedEngineDependent`). Entries
+    that are not IP literals are ignored, so validate what you pass.
 - **Search-list expansion.** A dotless hostname can be expanded by the node's DNS
   search list (common under Docker and Kubernetes), so the connection can go to
   a name the domain rules never saw. Domain rules judge the name the client sent.

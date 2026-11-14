@@ -631,12 +631,12 @@ func TestDigest_AsIsUnchanged(t *testing.T) {
 }
 
 func TestCapabilityDestinationResolveIsNotAnUpgradeCapability(t *testing.T) {
-	if CapabilityDestinationResolve != "policy.resolve.v1" {
+	if CapabilityDestinationResolve != "policy.destination.resolve.v1" {
 		t.Fatalf("capability = %q", CapabilityDestinationResolve)
 	}
 	for _, c := range AgentUpgradeCapabilities() {
 		if c == CapabilityDestinationResolve {
-			t.Fatal("policy.resolve.v1 must not gate upgrades")
+			t.Fatal("policy.destination.resolve.v1 must not gate upgrades")
 		}
 	}
 }

@@ -47,7 +47,7 @@ const CapabilityDestinationGroups = "policy.destination.groups.v1"
 //
 // It is meaningful only alongside CapabilityDestinationPolicy, and like it it is
 // not an upgrade capability.
-const CapabilityDestinationResolve = "policy.resolve.v1"
+const CapabilityDestinationResolve = "policy.destination.resolve.v1"
 
 // ResolveMode is whether the core resolves a hostname before it tries the IP
 // rules (CIDRs, Private) on it.
@@ -76,8 +76,8 @@ const (
 	//     the address dialed (a rebinding or round-robin name); sing-box dials the
 	//     addresses it matched;
 	//   - an inbound with sniffing routeOnly:true cannot run it (the sniffed name
-	//     replaces the real target for the lookup), so it stays AsIs; see
-	//     SniffForResolvedIPs;
+	//     replaces the real target for the lookup), and on Xray domainStrategy
+	//     is router-wide, so the whole NODE stays AsIs; see SniffForResolvedIPs;
 	//   - ANY resolved address matching a rule is a match: a block is
 	//     conservative, a CIDR allow is permissive, since the dial may use
 	//     another address.

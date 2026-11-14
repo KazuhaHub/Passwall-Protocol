@@ -125,7 +125,16 @@ var SniffingVectors = []SniffingVector{
 	{Name: "resolve: metadataOnly", Raw: `{"enabled":true,"metadataOnly":true}`, Need: needResolved, Verdict: protocol.SniffOK},
 	{Name: "resolve: routeOnly", Raw: `{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}`, Need: needResolved,
 		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
-	{Name: "resolve: routeOnly without an override", Raw: `{"enabled":true,"routeOnly":true}`, Need: needResolved,
+	// With routeOnly, xray-core's dispatcher sets the route target only when
+	// shouldOverride accepts a sniffed domain for a destOverride entry. An empty
+	// list, or fakedns alone, never does (a fakedns result replaces the target
+	// itself, not the route target), so nothing is substituted.
+	{Name: "resolve: routeOnly with an empty override never sets a route target", Raw: `{"enabled":true,"routeOnly":true}`, Need: needResolved, Verdict: protocol.SniffOK},
+	{Name: "resolve: routeOnly with an empty list", Raw: `{"enabled":true,"destOverride":[],"routeOnly":true}`, Need: needResolved, Verdict: protocol.SniffOK},
+	{Name: "resolve: routeOnly with fakedns only", Raw: `{"enabled":true,"destOverride":["fakedns"],"routeOnly":true}`, Need: needResolved, Verdict: protocol.SniffOK},
+	{Name: "resolve: routeOnly with fakedns and http", Raw: `{"enabled":true,"destOverride":["fakedns","http"],"routeOnly":true}`, Need: needResolved,
+		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
+	{Name: "resolve: routeOnly with tls alone", Raw: `{"enabled":true,"destOverride":["tls"],"routeOnly":true}`, Need: needResolved,
 		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
 	{Name: "resolve with domains: disabled is still injected", Raw: `{"enabled":false}`, Need: needResolved | needDomains,
 		Verdict: protocol.SniffInject, Reason: "sniffing_disabled"},
@@ -134,7 +143,7 @@ var SniffingVectors = []SniffingVector{
 	{Name: "resolve with domains: satisfied", Raw: `{"enabled":true,"destOverride":["http","tls","quic"]}`, Need: needResolved | needDomains, Verdict: protocol.SniffOK},
 	{Name: "resolve with protocols: metadataOnly is insufficient for the protocols", Raw: `{"enabled":true,"metadataOnly":true}`,
 		Need: needResolved | needProtocols, Verdict: protocol.SniffInsufficient, Reason: "metadata_only"},
-	{Name: "resolve with protocols: routeOnly", Raw: `{"enabled":true,"routeOnly":true}`, Need: needResolved | needProtocols,
+	{Name: "resolve with protocols: routeOnly", Raw: `{"enabled":true,"destOverride":["http"],"routeOnly":true}`, Need: needResolved | needProtocols,
 		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
 	{Name: "resolve: malformed", Raw: `{"enabled":`, Need: needResolved, Malformed: true},
 
