@@ -118,3 +118,24 @@ const (
 	// MaxPolicyStatusListeners bounds PolicyStatus.Listeners.
 	MaxPolicyStatusListeners = 256
 )
+
+// Audit observation bounds. The row limits are per observation and the byte
+// limit is over its encoding; the receiver measures the bytes before it decodes
+// anything, so a subtree that is too large costs it a length check and not a
+// parse. The byte limit is separate from the row limits because the two fail
+// differently: a full set of rows with short values fits easily, and long
+// destinations are what push the same row count past it.
+const (
+	// MaxAuditObservationBytes caps the encoded AuditObservation subtree. The
+	// whole-body limit is MaxSyncBodyBytes, which also has to carry the
+	// enumerations; like host telemetry, audit data must not be able to crowd out
+	// the roster and config a node syncs for.
+	MaxAuditObservationBytes = 1 << 20
+	// MaxAuditHits and MaxAuditUsage bound the rows of one observation. They are
+	// independent caps and do not add up to a batch that fits: with ordinary
+	// values a full set of both is larger than MaxAuditObservationBytes, so a
+	// node that has more than fits trims rows (newest hours first, before it
+	// freezes the batch) and leaves the rest for the next one.
+	MaxAuditHits  = 4096
+	MaxAuditUsage = 8192
+)

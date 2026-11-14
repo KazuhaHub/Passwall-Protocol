@@ -130,6 +130,17 @@ type NodeReport struct {
 	// from an agent that did not advertise CapabilityDestinationPolicy is a
 	// producer bug, which ValidateNodeReport refuses on the sender's side.
 	PolicyStatus *PolicyStatus `json:"policy_status,omitempty"`
+
+	// Audit is the batch of destination-rule hits and site usage the agent froze
+	// since it last got an acknowledgement. Absent means there is nothing to
+	// report, never "nothing happened": a node that is not recording looks the
+	// same, and the panel does not read the absence as either. A batch from an
+	// agent that did not advertise CapabilityAuditHits (or, for its usage rows,
+	// CapabilityAuditUsage) is a producer bug, which ValidateNodeReport refuses
+	// on the sender's side.
+	//
+	// Not part of ValidateNodeReportBase and not durable; see AuditObservation.
+	Audit *AuditObservation `json:"audit,omitempty"`
 }
 
 // MarshalJSON gives partial and full reports deliberately different shapes.
@@ -178,6 +189,12 @@ func (r NodeReport) MarshalJSON() ([]byte, error) {
 		// PolicyStatus is carried for the same reason as Host: it is an
 		// observation, not an enumeration, so a partial report may carry it.
 		PolicyStatus *PolicyStatus `json:"policy_status,omitempty"`
+		// Audit is carried for the same reason: it is a batch of observations,
+		// not an enumeration. A node's pending batch is resent with every report
+		// until acknowledged, and most reports are partial, so a partial report
+		// that dropped it would hold the batch back for a whole full-report
+		// interval.
+		Audit *AuditObservation `json:"audit,omitempty"`
 	}
 	return json.Marshal(partialReport{
 		AgentID: r.AgentID, ProtocolVersion: r.ProtocolVersion,
@@ -185,7 +202,7 @@ func (r NodeReport) MarshalJSON() ([]byte, error) {
 		CoreEngine: r.CoreEngine, CoreVersion: r.CoreVersion, CoreState: r.CoreState,
 		Partial: true, Have: r.Have, Capabilities: r.Capabilities,
 		Host: r.Host, Issues: r.Issues, TaskResults: r.TaskResults,
-		PolicyStatus: r.PolicyStatus,
+		PolicyStatus: r.PolicyStatus, Audit: r.Audit,
 	})
 }
 

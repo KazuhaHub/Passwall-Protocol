@@ -149,6 +149,22 @@ func ValidateNodeReport(report NodeReport) error {
 			return fmt.Errorf("policy_status: %w", err)
 		}
 	}
+	// Audit is bound the same way, and by two capabilities because it carries
+	// two kinds of row: hits need audit.hits.v1, and usage rows, which are a
+	// browsing record per person, need audit.usage.v1 as well. Like the status,
+	// it is outside the base check so the receiver can drop a bad batch without
+	// dropping the report.
+	if report.Audit != nil {
+		if !hasCapability(report.Capabilities, CapabilityAuditHits) {
+			return fmt.Errorf("audit observation without %s capability", CapabilityAuditHits)
+		}
+		if len(report.Audit.Usage) > 0 && !hasCapability(report.Capabilities, CapabilityAuditUsage) {
+			return fmt.Errorf("audit usage rows without %s capability", CapabilityAuditUsage)
+		}
+		if err := ValidateAuditObservation(*report.Audit); err != nil {
+			return fmt.Errorf("audit: %w", err)
+		}
+	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is
 		// what the cadence produces on most rounds.

@@ -535,6 +535,32 @@ func validateCIDRList(name string, cidrs []string) error {
 	return nil
 }
 
+// validateHostname is the hostname form a policy entry and an audit row share:
+// lowercase ASCII, no leading or trailing dot, every label 1..63 bytes. One
+// function, so the destinations a policy matches and the ones a hit reports are
+// spelled the same way.
+func validateHostname(value string) error {
+	if value == "" || len(value) > 253 {
+		return fmt.Errorf("value must be 1..253 bytes")
+	}
+	if value[0] == '.' || value[len(value)-1] == '.' {
+		return fmt.Errorf("value must not start or end with a dot")
+	}
+	for index := 0; index < len(value); index++ {
+		c := value[index]
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return fmt.Errorf("value must be lowercase [a-z0-9._-]")
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 {
+			return fmt.Errorf("every label must be 1..63 bytes")
+		}
+	}
+	return nil
+}
+
 func validateDomainEntry(entry string) error {
 	prefix, value, ok := strings.Cut(entry, ":")
 	if !ok {
@@ -542,23 +568,8 @@ func validateDomainEntry(entry string) error {
 	}
 	switch prefix {
 	case "domain", "full":
-		if value == "" || len(value) > 253 {
-			return fmt.Errorf("value must be 1..253 bytes")
-		}
-		if value[0] == '.' || value[len(value)-1] == '.' {
-			return fmt.Errorf("value must not start or end with a dot")
-		}
-		for index := 0; index < len(value); index++ {
-			c := value[index]
-			if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-' {
-				continue
-			}
-			return fmt.Errorf("value must be lowercase [a-z0-9._-]")
-		}
-		for _, label := range strings.Split(value, ".") {
-			if label == "" || len(label) > 63 {
-				return fmt.Errorf("every label must be 1..63 bytes")
-			}
+		if err := validateHostname(value); err != nil {
+			return err
 		}
 	case "keyword":
 		if value == "" || len(value) > 253 {
