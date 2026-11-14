@@ -18,6 +18,15 @@ const (
 	SniffForDomains SniffNeed = 1 << iota
 	// SniffForProtocols: the policy has protocol rules (bittorrent).
 	SniffForProtocols
+	// SniffForResolvedIPs: the policy resolves hostnames at routing time
+	// (DestinationPolicy.Resolve is ResolveOnDemand) and has IP rules, so the
+	// name the router resolves must be the name the connection goes to. It asks
+	// for nothing to be turned on, and sniffing that is off or metadata-only is
+	// fine (metadataOnly runs only the fakedns sniffer, which replaces the
+	// target itself, so the name judged is the name reached). What it refuses is
+	// a sniffed name used for routing only, while the connection goes to the
+	// requested address; see CheckXraySniffing.
+	SniffForResolvedIPs
 )
 
 // SniffVerdict is CheckXraySniffing's answer.
@@ -135,13 +144,33 @@ func CheckXraySniffing(raw []byte, need SniffNeed) (SniffVerdict, string, error)
 	if err := validateXrayExclusions(sniffing); err != nil {
 		return "", "", err
 	}
+	// SniffForResolvedIPs alone asks only that no sniffed name stands in for the
+	// real target while the connection goes elsewhere. Sniffing that is off or
+	// metadata-only never does, so there is nothing to inject and nothing to
+	// refuse, and only routeOnly is insufficient.
+	resolveOnly := need&^SniffForResolvedIPs == 0
 	if !sniffing.Enabled {
+		if resolveOnly {
+			return SniffOK, "", nil
+		}
 		return SniffInject, "sniffing_disabled", nil
 	}
 	if sniffing.MetadataOnly {
+		if resolveOnly {
+			return SniffOK, "", nil
+		}
 		return SniffInsufficient, "metadata_only", nil
 	}
 	if need&SniffForDomains == 0 {
+		// Only the resolved-address need can still fail here, and only on
+		// routeOnly: with it, the router resolves the sniffed name while the
+		// connection goes to the requested address, so a fake SNI chooses which
+		// addresses the IP rules judge (xray-core features/routing/dns/context.go
+		// prefers the domain over the real IP). It only happens if some destOverride
+		// entry can accept a sniffed domain: see routesSniffedName.
+		if need&SniffForResolvedIPs != 0 && sniffing.RouteOnly && routesSniffedName(sniffing.DestOverride) {
+			return SniffInsufficient, "route_only_resolve", nil
+		}
 		return SniffOK, "", nil
 	}
 	have := make(map[string]bool, len(sniffing.DestOverride))
@@ -288,4 +317,24 @@ func validateXrayIPRule(rule string) error {
 		}
 	}
 	return nil
+}
+
+// routesSniffedName is whether routeOnly can put a sniffed name into the route
+// target. In xray-core's dispatcher (app/dispatcher/default.go) the route target
+// is set only after shouldOverride accepts a sniffed domain for one of the
+// destOverride entries, and only when the result's protocol is not fakedns; a
+// fakedns result replaces the target itself instead. An empty list accepts
+// nothing. infra/conf/xray.go maps both "fakedns" and "fakedns+others" to the
+// runtime protocol "fakedns", and the dispatcher excludes "fakedns+others" from
+// the route-target branch too, so neither of them can. Any other entry (http,
+// tls, quic) can.
+func routesSniffedName(override stringList) bool {
+	for _, entry := range override {
+		switch strings.ToLower(entry) {
+		case "fakedns", "fakedns+others":
+		default:
+			return true
+		}
+	}
+	return false
 }

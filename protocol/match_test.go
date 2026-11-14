@@ -145,3 +145,289 @@ func FuzzMatchDestination(fuzz *testing.F) {
 		}
 	})
 }
+
+func onDemand(rules ...DestinationRule) *DestinationPolicy {
+	return &DestinationPolicy{Rules: rules, Resolve: ResolveOnDemand}
+}
+
+// Under on_demand the CIDR and Private alternatives of a rule are tried on a
+// hostname's resolved addresses, which is what a router that resolves first
+// would do; the result is the reference answer with those addresses as input.
+func TestMatch_OnDemandEqualsReferenceWithIPs(t *testing.T) {
+	rules := []DestinationRule{
+		{ID: "s1", Action: RuleBlock, SourceCIDRs: []string{"203.0.113.0/24"}},
+		{ID: "p1", Action: RuleAllow, Domains: []string{"full:ok.example"}, CIDRs: []string{"192.0.2.0/24"}},
+		{ID: "p2", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}},
+		{ID: "p3", Action: RuleBlock, Private: true},
+		{ID: "g1x1", Action: RuleAllow, Subjects: []SubjectKey{"usr_1"}, Domains: []string{"full:member.example"}},
+		{ID: "g1", Action: RuleBlock, Subjects: []SubjectKey{"usr_1"}, CatchAll: true},
+		{ID: "p4", Action: RuleObserve, CIDRs: []string{"100.0.0.0/10"}},
+	}
+	for _, tc := range []struct {
+		name       string
+		in         MatchInput
+		verdict    MatchVerdict
+		terminated string
+		entry      string
+	}{
+		{"source deny first", MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8"}, Source: "203.0.113.5"}, MatchBlock, "s1", "203.0.113.0/24"},
+		{"phase 1 allow by resolved cidr", MatchInput{Target: "a.example", Resolved: []string{"192.0.2.7"}}, MatchAllow, "p1", "192.0.2.0/24"},
+		{"phase 1 allow by domain", MatchInput{Target: "ok.example", Resolved: []string{"10.1.1.1"}}, MatchAllow, "p1", "full:ok.example"},
+		{"phase 3 block by cidr", MatchInput{Target: "a.example", Resolved: []string{"10.1.1.1"}}, MatchBlock, "p2", "10.0.0.0/8"},
+		{"phase 3 block by private", MatchInput{Target: "a.example", Resolved: []string{"127.0.0.1"}}, MatchBlock, "p3", "127.0.0.0/8"},
+		{"any resolved address is enough", MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8", "10.9.9.9"}}, MatchBlock, "p2", "10.0.0.0/8"},
+		{"an allowed address elsewhere in the set permits the allow", MatchInput{Target: "a.example", Resolved: []string{"10.9.9.9", "192.0.2.1"}}, MatchAllow, "p1", "192.0.2.0/24"},
+		{"ipv6 private", MatchInput{Target: "a.example", Resolved: []string{"::1"}}, MatchBlock, "p3", "::/127"},
+		{"ipv4-mapped is unmapped", MatchInput{Target: "a.example", Resolved: []string{"::ffff:10.1.1.1"}}, MatchBlock, "p2", "10.0.0.0/8"},
+		{"public resolution reaches the group", MatchInput{Target: "a.example", Subject: "usr_1", Resolved: []string{"8.8.8.8"}}, MatchBlock, "g1", ""},
+		{"group member allow", MatchInput{Target: "member.example", Subject: "usr_1", Resolved: []string{"8.8.8.8"}}, MatchAllow, "g1x1", "full:member.example"},
+		{"a blocked cidr beats the group allow", MatchInput{Target: "member.example", Subject: "usr_1", Resolved: []string{"10.0.0.1"}}, MatchBlock, "p2", "10.0.0.0/8"},
+		{"private beats the group allow", MatchInput{Target: "member.example", Subject: "usr_1", Resolved: []string{"172.16.0.1"}}, MatchBlock, "p3", "172.16.0.0/12"},
+		{"observe last", MatchInput{Target: "a.example", Resolved: []string{"100.1.1.1"}}, MatchObserve, "p4", "100.0.0.0/10"},
+		{"nothing hits", MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8"}}, MatchDefault, "", ""},
+		{"an address target is matched directly and Resolved is ignored", MatchInput{Target: "10.2.2.2", Resolved: []string{"8.8.8.8"}}, MatchBlock, "p2", "10.0.0.0/8"},
+		{"an unparsable resolved entry is ignored", MatchInput{Target: "a.example", Resolved: []string{"nonsense", "10.1.1.1"}}, MatchBlock, "p2", "10.0.0.0/8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.in.Source == "" {
+				tc.in.Source = "8.8.4.4" // a known source that matches no source rule
+			}
+			got := MatchDestination(onDemandPolicy(rules), tc.in)
+			if got.Verdict != tc.verdict || got.Terminated != tc.terminated {
+				t.Fatalf("got %s/%q, want %s/%q: %+v", got.Verdict, got.Terminated, tc.verdict, tc.terminated, got.Steps)
+			}
+			if got.Conditional {
+				t.Fatalf("conditional: %+v", got.Steps)
+			}
+			if tc.entry != "" {
+				last := got.Steps[len(got.Steps)-1]
+				for _, s := range got.Steps {
+					if s.Result == StepHit {
+						last = s
+					}
+				}
+				if last.Entry != tc.entry {
+					t.Fatalf("entry = %q, want %q", last.Entry, tc.entry)
+				}
+			}
+			if len(got.Notes) != 0 {
+				t.Fatalf("unexpected notes %v", got.Notes)
+			}
+		})
+	}
+}
+
+func onDemandPolicy(rules []DestinationRule) *DestinationPolicy {
+	return &DestinationPolicy{Rules: rules, Resolve: ResolveOnDemand}
+}
+
+func TestMatch_OnDemandWithoutResolvedIsConditional(t *testing.T) {
+	p := onDemand(
+		DestinationRule{ID: "p1", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}},
+		DestinationRule{ID: "p2", Action: RuleBlock, Domains: []string{"full:b.example"}},
+	)
+	got := MatchDestination(p, MatchInput{Target: "a.example"})
+	if got.Verdict != MatchDefault || !got.Conditional {
+		t.Fatalf("got %s conditional=%v, want default/conditional: %+v", got.Verdict, got.Conditional, got.Steps)
+	}
+	if got.Steps[len(got.Steps)-2].Result != StepUntestable {
+		t.Fatalf("steps = %+v", got.Steps)
+	}
+	if !reflect.DeepEqual(got.Notes, []MatchNote{NoteHostnameNeedsResolution}) {
+		t.Fatalf("notes = %v", got.Notes)
+	}
+	// A later rule that does hit ends the evaluation, still conditional.
+	got = MatchDestination(p, MatchInput{Target: "b.example"})
+	if got.Verdict != MatchBlock || got.Terminated != "p2" || !got.Conditional {
+		t.Fatalf("got %s %q conditional=%v", got.Verdict, got.Terminated, got.Conditional)
+	}
+	// A domain hit on the same rule is not untestable.
+	q := onDemand(DestinationRule{ID: "p1", Action: RuleBlock, Domains: []string{"full:a.example"}, CIDRs: []string{"10.0.0.0/8"}})
+	got = MatchDestination(q, MatchInput{Target: "a.example"})
+	if got.Verdict != MatchBlock || got.Conditional || len(got.Notes) != 0 {
+		t.Fatalf("domain hit: %+v", got)
+	}
+	// A definite miss on another field beats the untestable alternative.
+	r := onDemand(DestinationRule{ID: "p1", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}, Ports: "25"})
+	got = MatchDestination(r, MatchInput{Target: "a.example", Port: 80})
+	if got.Conditional || got.Steps[0].Result != StepMiss {
+		t.Fatalf("port miss: %+v", got)
+	}
+}
+
+func TestMatch_OnDemandResolutionFailed(t *testing.T) {
+	p := onDemand(DestinationRule{ID: "p1", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}})
+	got := MatchDestination(p, MatchInput{Target: "nx.example", Resolved: []string{}})
+	if got.Verdict != MatchDefault || got.Conditional {
+		t.Fatalf("got %s conditional=%v", got.Verdict, got.Conditional)
+	}
+	if got.Steps[0].Result != StepMiss {
+		t.Fatalf("steps = %+v", got.Steps)
+	}
+	if !reflect.DeepEqual(got.Notes, []MatchNote{NoteResolutionFailedEngineDependent}) {
+		t.Fatalf("notes = %v", got.Notes)
+	}
+	// A non-empty resolution that misses is a clean miss.
+	got = MatchDestination(p, MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8"}})
+	if len(got.Notes) != 0 {
+		t.Fatalf("notes = %v", got.Notes)
+	}
+	// An address target is not a resolution failure.
+	got = MatchDestination(p, MatchInput{Target: "8.8.8.8", Resolved: []string{}})
+	if len(got.Notes) != 0 {
+		t.Fatalf("notes = %v", got.Notes)
+	}
+}
+
+// AsIs ignores Resolved altogether and keeps its note.
+func TestMatch_AsIsIgnoresResolved(t *testing.T) {
+	p := &DestinationPolicy{Rules: []DestinationRule{{ID: "p1", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}}}}
+	for _, resolved := range [][]string{nil, {}, {"10.1.1.1"}} {
+		got := MatchDestination(p, MatchInput{Target: "a.example", Resolved: resolved})
+		if got.Verdict != MatchDefault || got.Conditional || !reflect.DeepEqual(got.Notes, []MatchNote{NoteHostnameSkipsIPRules}) {
+			t.Fatalf("resolved=%v: %+v", resolved, got)
+		}
+	}
+	// An unknown mode on a policy that would not validate behaves as AsIs.
+	p.Resolve = "if_non_match"
+	got := MatchDestination(p, MatchInput{Target: "a.example", Resolved: []string{"10.1.1.1"}})
+	if got.Verdict != MatchDefault {
+		t.Fatalf("unknown mode: %+v", got)
+	}
+}
+
+// Report-only must never change a verdict, with or without resolved addresses:
+// turning every block rule into an observe rule (moved to the last phase) leaves
+// every non-block outcome as it was and turns a block into observe or default.
+func TestReport_NeverChangesAVerdictAcrossResolvedInputs(t *testing.T) {
+	enforce := []DestinationRule{
+		{ID: "p1", Action: RuleAllow, Domains: []string{"full:ok.example"}, CIDRs: []string{"192.0.2.0/24"}},
+		{ID: "p2", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}},
+		{ID: "p3", Action: RuleBlock, Private: true},
+		{ID: "p4", Action: RuleBlock, Domains: []string{"domain:bad.example"}},
+		{ID: "g1x1", Action: RuleAllow, Subjects: []SubjectKey{"usr_1"}, Domains: []string{"full:member.example"}, CIDRs: []string{"8.8.8.0/24"}},
+		{ID: "g1", Action: RuleBlock, Subjects: []SubjectKey{"usr_1"}, CatchAll: true},
+	}
+	// The report form keeps allows where they are and turns every block into an
+	// observe rule in the last phase, after the group allows. A group catch-all
+	// becomes a catch-all observe (a trial), and a phase-5 domain observe comes
+	// after the IP blocks it follows in enforce mode.
+	report := []DestinationRule{enforce[0], enforce[4]}
+	catchAll := enforce[5]
+	catchAll.Action = RuleObserve
+	report = append(report, catchAll)
+	for _, rule := range enforce[1:4] {
+		rule.Action = RuleObserve
+		report = append(report, rule)
+	}
+	report = append(report, DestinationRule{ID: "p5", Action: RuleObserve, Domains: []string{"full:obs.example"}})
+	for _, mode := range []ResolveMode{ResolveAsIs, ResolveOnDemand} {
+		e := &DestinationPolicy{Rules: enforce, Resolve: mode}
+		r := &DestinationPolicy{Rules: report, Resolve: mode}
+		if err := ValidateDestinationPolicy(r); err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range []string{"a.example", "ok.example", "x.bad.example", "member.example", "obs.example", "10.1.1.1", "8.8.8.8", "192.0.2.4"} {
+			for _, resolved := range [][]string{nil, {}, {"8.8.8.8"}, {"10.1.1.1"}, {"192.0.2.9"}, {"8.8.8.8", "127.0.0.1"}, {"fd00::1"}} {
+				for _, subject := range []SubjectKey{"", "usr_1"} {
+					in := MatchInput{Target: target, Resolved: resolved, Subject: subject}
+					ev, rv := MatchDestination(e, in), MatchDestination(r, in)
+					// Observe is an allow that is recorded, so it is the same verdict
+					// as default or allow for what the connection may do.
+					norm := func(v MatchVerdict) MatchVerdict {
+						if v == MatchObserve {
+							return MatchDefault
+						}
+						return v
+					}
+					if ev.Verdict == MatchBlock {
+						if rv.Verdict == MatchBlock {
+							t.Fatalf("%s %q %v %q: enforce blocks, report blocks", mode, target, resolved, subject)
+						}
+					} else if norm(rv.Verdict) != norm(ev.Verdict) {
+						t.Fatalf("%s %q %v %q: enforce %s, report %s", mode, target, resolved, subject, ev.Verdict, rv.Verdict)
+					}
+					if rv.Verdict == MatchBlock {
+						t.Fatalf("report-only blocked %q %v", target, resolved)
+					}
+				}
+			}
+		}
+	}
+}
+
+// The invariants report-only rests on, stated as pairs of policies that differ
+// in one respect, over both modes and many hostnames, resolutions and subjects.
+// "permits" means the verdict is not block.
+//
+// The older enforce-vs-report test above tolerates a block becoming an allow:
+// in the report form a phase-5 observe rule falls behind a phase-4 group member
+// allow, which enforce mode's phase-3 block did not, so the connection is let
+// through (and not recorded). That is the documented lower bound, not a change
+// in what report-only is allowed to do, so the pairs below compare what holds
+// without that exception.
+func TestReport_InvariantPairsAcrossResolvedInputs(t *testing.T) {
+	base := []DestinationRule{
+		{ID: "p1", Action: RuleAllow, Domains: []string{"full:ok.example"}, CIDRs: []string{"192.0.2.0/24"}},
+		{ID: "p2", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}},
+		{ID: "p3", Action: RuleBlock, Private: true},
+		{ID: "p4", Action: RuleBlock, Domains: []string{"domain:bad.example"}},
+	}
+	added := []DestinationRule{
+		{ID: "p5", Action: RuleObserve, Domains: []string{"full:member.example", "full:obs.example"}},
+		{ID: "p6", Action: RuleObserve, CIDRs: []string{"100.0.0.0/10"}},
+		{ID: "p7", Action: RuleObserve, Private: true},
+	}
+	memberAllow := DestinationRule{ID: "g1x1", Action: RuleAllow, Subjects: []SubjectKey{"usr_1"}, Domains: []string{"full:member.example"}, CIDRs: []string{"8.8.8.0/24"}}
+	groupBlock := DestinationRule{ID: "g1", Action: RuleBlock, Subjects: []SubjectKey{"usr_1"}, CatchAll: true}
+	groupObserve := groupBlock
+	groupObserve.Action = RuleObserve
+	cat := func(parts ...[]DestinationRule) []DestinationRule {
+		var out []DestinationRule
+		for _, part := range parts {
+			out = append(out, part...)
+		}
+		return out
+	}
+	one := func(r DestinationRule) []DestinationRule { return []DestinationRule{r} }
+
+	type pair struct {
+		name     string
+		a, b     []DestinationRule
+		allowSet bool // an allow in a is an allow in b and the reverse
+	}
+	pairs := []pair{
+		{"added observe rules (no group)", base, cat(base, added), true},
+		{"added observe rules (enforcing group)", cat(base, one(memberAllow), one(groupBlock)), cat(base, one(memberAllow), one(groupBlock), added), true},
+		{"added observe rules (group in report state)", cat(base, one(memberAllow), one(groupObserve)), cat(base, one(memberAllow), one(groupObserve), added), true},
+		{"no group vs group in report state", base, cat(base, one(memberAllow), one(groupObserve)), false},
+		{"no group vs group in report state, with observe rules", cat(base, added), cat(base, one(memberAllow), one(groupObserve), added), false},
+	}
+	targets := []string{"a.example", "ok.example", "x.bad.example", "member.example", "obs.example", "10.1.1.1", "8.8.8.8", "192.0.2.4", "100.1.1.1"}
+	resolutions := [][]string{nil, {}, {"8.8.8.8"}, {"10.1.1.1"}, {"192.0.2.9"}, {"8.8.8.8", "127.0.0.1"}, {"fd00::1"}, {"100.1.1.1"}, {"8.8.8.9", "100.2.2.2"}}
+	for _, mode := range []ResolveMode{ResolveAsIs, ResolveOnDemand} {
+		for _, p := range pairs {
+			a := &DestinationPolicy{Rules: p.a, Resolve: mode}
+			b := &DestinationPolicy{Rules: p.b, Resolve: mode}
+			for _, policy := range []*DestinationPolicy{a, b} {
+				if err := ValidateDestinationPolicy(policy); err != nil {
+					t.Fatalf("%s: %v", p.name, err)
+				}
+			}
+			for _, target := range targets {
+				for _, resolved := range resolutions {
+					for _, subject := range []SubjectKey{"usr_1", "usr_2", "usr_3"} {
+						in := MatchInput{Target: target, Resolved: resolved, Subject: subject}
+						av, bv := MatchDestination(a, in).Verdict, MatchDestination(b, in).Verdict
+						if (av == MatchBlock) != (bv == MatchBlock) {
+							t.Fatalf("%s [%s] %q %v %s: block vs permit changed: %s -> %s", p.name, mode, target, resolved, subject, av, bv)
+						}
+						if p.allowSet && (av == MatchAllow) != (bv == MatchAllow) {
+							t.Fatalf("%s [%s] %q %v %s: allow changed: %s -> %s", p.name, mode, target, resolved, subject, av, bv)
+						}
+					}
+				}
+			}
+		}
+	}
+}

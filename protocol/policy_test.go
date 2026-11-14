@@ -568,3 +568,75 @@ func TestCapabilityDestinationGroupsIsNotAnUpgradeCapability(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate_ResolveValues(t *testing.T) {
+	for _, tc := range []struct {
+		mode    ResolveMode
+		wantErr string
+	}{
+		{mode: ResolveAsIs},
+		{mode: ResolveOnDemand},
+		{mode: "if_non_match", wantErr: "if_non_match"},
+		{mode: "IPIfNonMatch", wantErr: "resolve"},
+		{mode: "on_demand ", wantErr: "resolve"},
+		{mode: "ON_DEMAND", wantErr: "resolve"},
+		{mode: "as_is", wantErr: "resolve"},
+	} {
+		p := validPolicy()
+		p.Resolve = tc.mode
+		err := ValidateDestinationPolicy(p)
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("resolve %q: %v", tc.mode, err)
+		case tc.wantErr != "" && err == nil:
+			t.Errorf("resolve %q accepted", tc.mode)
+		case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+			t.Errorf("resolve %q: error %q does not mention %q", tc.mode, err, tc.wantErr)
+		}
+	}
+	if ResolveAsIs != "" || ResolveOnDemand != "on_demand" {
+		t.Fatalf("wire values changed: %q %q", ResolveAsIs, ResolveOnDemand)
+	}
+	// "if_non_match" must be refused with a reason, not as an unknown value.
+	p := validPolicy()
+	p.Resolve = "if_non_match"
+	if err := ValidateDestinationPolicy(p); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("if_non_match error = %v, want an explanation that it is not supported", err)
+	}
+}
+
+// AsIs is the absence of the field, so every digest minted before Resolve
+// existed is still the digest of the same policy.
+func TestDigest_AsIsUnchanged(t *testing.T) {
+	p := validPolicy()
+	if strings.Contains(string(mustMarshal(t, p)), "resolve") {
+		t.Fatalf("AsIs is encoded: %s", mustMarshal(t, p))
+	}
+	// Pinned before the field was added.
+	const want = "8981e141555807a9d8e9487203e52cb00120dfa0bc8f6220193e8d86e2a2b3b5"
+	if got := PolicyDigest(p); got != want {
+		t.Fatalf("digest of the v0.4 policy = %s, want %s", got, want)
+	}
+	p.Resolve = ResolveOnDemand
+	if got := PolicyDigest(p); got == want {
+		t.Fatal("digest ignores resolve")
+	}
+	if !strings.Contains(string(mustMarshal(t, p)), `"resolve":"on_demand"`) {
+		t.Fatalf("on_demand is not encoded: %s", mustMarshal(t, p))
+	}
+	var decoded DestinationPolicy
+	if err := json.Unmarshal(mustMarshal(t, p), &decoded); err != nil || decoded.Resolve != ResolveOnDemand {
+		t.Fatalf("round trip: %+v %v", decoded, err)
+	}
+}
+
+func TestCapabilityDestinationResolveIsNotAnUpgradeCapability(t *testing.T) {
+	if CapabilityDestinationResolve != "policy.destination.resolve.v1" {
+		t.Fatalf("capability = %q", CapabilityDestinationResolve)
+	}
+	for _, c := range AgentUpgradeCapabilities() {
+		if c == CapabilityDestinationResolve {
+			t.Fatal("policy.destination.resolve.v1 must not gate upgrades")
+		}
+	}
+}

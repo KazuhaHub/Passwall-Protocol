@@ -35,6 +35,55 @@ const CapabilityDestinationPolicy = "policy.destination.v1"
 // advertised this one, and PSP is where that is enforced.
 const CapabilityDestinationGroups = "policy.destination.groups.v1"
 
+// CapabilityDestinationResolve says the agent compiles DestinationPolicy.Resolve
+// on EVERY engine it runs: an agent that declares it enforces on_demand on Xray
+// and on sing-box alike, or refuses the policy.
+//
+// IT GATES SENDING, AND THE GATE IS MANDATORY. An agent ignores a field it does
+// not know, so an agent without this capability that is sent Resolve on_demand
+// would accept the policy and silently run it as AsIs, with IP rules that never
+// judge a hostname. PSP must therefore send a non-AsIs Resolve only to an agent
+// that declared it. ValidateDestinationPolicy cannot see capabilities.
+//
+// It is meaningful only alongside CapabilityDestinationPolicy, and like it it is
+// not an upgrade capability.
+const CapabilityDestinationResolve = "policy.destination.resolve.v1"
+
+// ResolveMode is whether the core resolves a hostname before it tries the IP
+// rules (CIDRs, Private) on it.
+//
+// Only AsIs and on_demand exist. The third mode Xray offers, IPIfNonMatch, runs
+// every rule without addresses first and resolves only when none hit. That
+// reorders rules: an IP-only block ahead of a report-only (observe) domain rule
+// is skipped when the observe rule hits in the first pass, so report-only would
+// change a verdict, and a CIDR block ahead of a group member's domain allow
+// would be skipped too. It is refused on the wire, not merely unoffered.
+type ResolveMode string
+
+const (
+	// ResolveAsIs is the default and is encoded as the absence of the field, so
+	// a policy that does not use Resolve keeps the digest it always had. Nothing
+	// resolves a hostname when routing: CIDRs and Private are tried on an address
+	// target only.
+	ResolveAsIs ResolveMode = ""
+	// ResolveOnDemand resolves the target hostname the first time a rule asks for
+	// its addresses, once per connection, and tries every later IP alternative on
+	// the same set, in rule order. It is the reference matcher with the resolved
+	// addresses as input. Caveats, which a caller must repeat to an operator:
+	//   - Xray fails OPEN when that lookup fails (the IP rules miss) and sing-box
+	//     fails CLOSED (the connection fails);
+	//   - Xray resolves again when it dials, so the address matched need not be
+	//     the address dialed (a rebinding or round-robin name); sing-box dials the
+	//     addresses it matched;
+	//   - an inbound with sniffing routeOnly:true cannot run it (the sniffed name
+	//     replaces the real target for the lookup), and on Xray domainStrategy
+	//     is router-wide, so the whole NODE stays AsIs; see SniffForResolvedIPs;
+	//   - ANY resolved address matching a rule is a match: a block is
+	//     conservative, a CIDR allow is permissive, since the dial may use
+	//     another address.
+	ResolveOnDemand ResolveMode = "on_demand"
+)
+
 // RuleAction is what a matching rule does.
 type RuleAction string
 
@@ -72,6 +121,10 @@ type DestinationPolicy struct {
 	Rules   []DestinationRule `json:"rules"`
 	Exempt  []SubjectKey      `json:"exempt,omitempty"`
 	Collect CollectLevel      `json:"collect,omitempty"`
+	// Resolve is how hostnames meet the IP rules; see ResolveMode. AsIs is "",
+	// omitted from the encoding. Send a non-AsIs value only to an agent that
+	// declared CapabilityDestinationResolve.
+	Resolve ResolveMode `json:"resolve,omitempty"`
 }
 
 // DestinationRule is one rule. Fields are ANDed; within a group that has
@@ -107,10 +160,12 @@ type DestinationRule struct {
 	// written IPv4-mapped is matched as IPv4, and so IPv4-mapped prefixes are
 	// not valid here.
 	//
-	// IT IS TRIED ON AN ADDRESS ONLY. The core routes with AsIs: nothing resolves
-	// a hostname first, so a hostname that resolves into one of these ranges is
-	// not matched by this rule. That is a documented limit of the policy (see
-	// NoteHostnameSkipsIPRules), not something a rule can be written to avoid.
+	// UNDER AsIs (THE DEFAULT) IT IS TRIED ON AN ADDRESS ONLY. The core
+	// routes with AsIs: nothing resolves a hostname first, so a hostname that
+	// resolves into one of these ranges is not matched by this rule (see
+	// NoteHostnameSkipsIPRules). Under ResolveOnDemand the core resolves the
+	// hostname and this rule is tried on the resolved addresses as well, any one
+	// of which is enough; see ResolveMode for what that costs and where it fails.
 	// On Xray, freedom's default block of private destinations can still stop a
 	// private address after resolution, but only for some inbound kinds and
 	// only after the operator's own final rules; see NoteHostnameSkipsIPRules
@@ -127,8 +182,7 @@ type DestinationRule struct {
 	Protocols []string `json:"protocols,omitempty"` // only "bittorrent"
 	// Private matches a private or reserved destination address, exactly the
 	// table PrivateDestinationCIDRs returns. It is an alternative to Domains
-	// and CIDRs; see Domains, and see CIDRs for why a hostname is never matched
-	// by it.
+	// and CIDRs; see Domains, and see CIDRs for when a hostname is matched by it.
 	Private  bool `json:"private,omitempty"`
 	CatchAll bool `json:"catch_all,omitempty"`
 }
@@ -236,6 +290,13 @@ func ValidateDestinationPolicy(policy *DestinationPolicy) error {
 	case CollectOff, CollectHits, CollectHitsAndUsage:
 	default:
 		return fmt.Errorf("collect %q is not one of off, hits, hits_and_usage", policy.Collect)
+	}
+	switch policy.Resolve {
+	case ResolveAsIs, ResolveOnDemand:
+	case "if_non_match":
+		return fmt.Errorf("resolve %q is not supported: it would reorder rules and let report-only change a verdict; use on_demand or omit resolve", policy.Resolve)
+	default:
+		return fmt.Errorf("resolve %q is not one of \"\" (omitted) and on_demand", policy.Resolve)
 	}
 	// Rules is never null in a policy that exists: null and [] are different
 	// bytes and so different digests, and a decoder reads `"rules":null` as nil.
