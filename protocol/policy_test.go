@@ -555,3 +555,16 @@ func TestValidateDestinationPolicyGroupContiguity(t *testing.T) {
 		}
 	}
 }
+
+func TestCapabilityDestinationGroupsIsNotAnUpgradeCapability(t *testing.T) {
+	if CapabilityDestinationGroups != "policy.destination.groups.v1" {
+		t.Fatalf("capability name changed: %q", CapabilityDestinationGroups)
+	}
+	// Like the destination policy itself, lacking it says nothing about whether
+	// the agent can take an upgrade.
+	for _, upgrade := range AgentUpgradeCapabilities() {
+		if upgrade == CapabilityDestinationGroups {
+			t.Fatalf("%s is an upgrade capability", upgrade)
+		}
+	}
+}
