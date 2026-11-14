@@ -22,6 +22,16 @@ import (
 // and declaring it does not make an agent eligible for anything but a policy.
 const CapabilityDestinationPolicy = "policy.destination.v1"
 
+// CapabilityDestinationGroups says the agent enforces group rules (g*, phase 4)
+// exactly as the wire specification orders them: in particular a protocol
+// block (BitTorrent) is evaluated before a group member allow on every engine,
+// including sing-box, whose pre-sniff pass cannot see protocols. PSP sends
+// group rules only to an agent that advertised it, and only such an agent is
+// eligible to serve the members of an allowlist group.
+//
+// Like CapabilityDestinationPolicy it is not an upgrade capability.
+const CapabilityDestinationGroups = "policy.destination.groups.v1"
+
 // RuleAction is what a matching rule does.
 type RuleAction string
 

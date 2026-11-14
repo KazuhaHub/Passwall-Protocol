@@ -74,6 +74,13 @@ that advertised it, so an agent that did not sees a config byte-identical to
 v0.2.x. It is **not** an upgrade capability and is not in
 `AgentUpgradeCapabilities`; lacking it never holds an agent back from upgrading.
 
+Group rules (`g*`, the allowlist groups) are additionally gated by
+`policy.destination.groups.v1`: an agent declaring it enforces them in the
+specified order on every engine, in particular a protocol block (BitTorrent)
+before a group member allow. PSP sends group rules, and makes an agent eligible
+for an allowlist group's members, only when the agent declared it. It is not an
+upgrade capability either.
+
 What is shared beyond the types: `ValidateDestinationPolicy`,
 `ValidatePolicyStatus`, `PolicyDigest`, `CheckXraySniffing` (can this inbound's
 sniffing supply what the policy needs), `MatchDestination` (a pure trace of
