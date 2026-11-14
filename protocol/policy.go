@@ -29,7 +29,10 @@ const CapabilityDestinationPolicy = "policy.destination.v1"
 // group rules only to an agent that advertised it, and only such an agent is
 // eligible to serve the members of an allowlist group.
 //
-// Like CapabilityDestinationPolicy it is not an upgrade capability.
+// It is meaningful only alongside CapabilityDestinationPolicy, and like it it
+// is not an upgrade capability. ValidateDestinationPolicy cannot see
+// capabilities: a policy holding g* rules may be sent only to an agent that
+// advertised this one, and PSP is where that is enforced.
 const CapabilityDestinationGroups = "policy.destination.groups.v1"
 
 // RuleAction is what a matching rule does.
