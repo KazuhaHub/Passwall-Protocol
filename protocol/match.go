@@ -56,12 +56,24 @@ var privatePrefixes = sync.OnceValue(func() []netip.Prefix {
 // "unknown", and a rule that depends on an unknown field is untestable rather
 // than a miss.
 type MatchInput struct {
-	Subject  SubjectKey  // "" = not exempt, in no group
-	Inbound  ListenerKey // "" = unknown inbound: rules with Inbounds are untestable
-	Source   string      // client IP; "" = unknown: SourceCIDRs rules are untestable
-	Target   string      // hostname or IP literal
-	Port     uint16      // 0 = unknown: rules with Ports are untestable
-	Network  string      // "tcp" | "udp" | "" (unknown)
+	Subject SubjectKey  // "" = not exempt, in no group
+	Inbound ListenerKey // "" = unknown inbound: rules with Inbounds are untestable
+	Source  string      // client IP; "" = unknown: SourceCIDRs rules are untestable
+	Target  string      // hostname or IP literal
+	Port    uint16      // 0 = unknown: rules with Ports are untestable
+	Network string      // "tcp" | "udp" | "" (unknown)
+	// Resolved: on_demand only: nil = not given (IP rules on a hostname
+	// untestable); non-nil empty = lookup failed; non-IP entries ignored.
+	//
+	// It is what the hostname resolves to, as IP literals, and is read only
+	// under ResolveOnDemand and only for a hostname target.
+	//   - nil means not given: the CIDR and Private alternatives on a hostname
+	//     are untestable and the note is NoteHostnameNeedsResolution.
+	//   - non-nil and empty means the lookup failed: those alternatives miss and
+	//     the note is NoteResolutionFailedEngineDependent.
+	// An entry that is not an IP literal is ignored, so a list of nothing but
+	// garbage reads as a failed lookup: a caller must validate what it passes.
+	// MatchDestination never resolves anything itself.
 	Resolved []string
 }
 

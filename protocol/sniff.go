@@ -322,13 +322,17 @@ func validateXrayIPRule(rule string) error {
 // routesSniffedName is whether routeOnly can put a sniffed name into the route
 // target. In xray-core's dispatcher (app/dispatcher/default.go) the route target
 // is set only after shouldOverride accepts a sniffed domain for one of the
-// destOverride entries, and only when the protocol is not fakedns. An empty list
-// accepts nothing, and "fakedns" alone does not either: a fakedns result
-// replaces the target itself rather than the route target. Any other entry
-// (http, tls, quic, and "fakedns+others", whose result can be one of those) can.
+// destOverride entries, and only when the result's protocol is not fakedns; a
+// fakedns result replaces the target itself instead. An empty list accepts
+// nothing. infra/conf/xray.go maps both "fakedns" and "fakedns+others" to the
+// runtime protocol "fakedns", and the dispatcher excludes "fakedns+others" from
+// the route-target branch too, so neither of them can. Any other entry (http,
+// tls, quic) can.
 func routesSniffedName(override stringList) bool {
 	for _, entry := range override {
-		if strings.ToLower(entry) != "fakedns" {
+		switch strings.ToLower(entry) {
+		case "fakedns", "fakedns+others":
+		default:
 			return true
 		}
 	}

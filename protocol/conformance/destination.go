@@ -134,6 +134,7 @@ var SniffingVectors = []SniffingVector{
 	{Name: "resolve: routeOnly with fakedns only", Raw: `{"enabled":true,"destOverride":["fakedns"],"routeOnly":true}`, Need: needResolved, Verdict: protocol.SniffOK},
 	{Name: "resolve: routeOnly with fakedns and http", Raw: `{"enabled":true,"destOverride":["fakedns","http"],"routeOnly":true}`, Need: needResolved,
 		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
+	{Name: "resolve: routeOnly with fakedns+others", Raw: `{"enabled":true,"destOverride":["fakedns+others"],"routeOnly":true}`, Need: needResolved, Verdict: protocol.SniffOK},
 	{Name: "resolve: routeOnly with tls alone", Raw: `{"enabled":true,"destOverride":["tls"],"routeOnly":true}`, Need: needResolved,
 		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
 	{Name: "resolve with domains: disabled is still injected", Raw: `{"enabled":false}`, Need: needResolved | needDomains,

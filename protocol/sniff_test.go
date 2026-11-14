@@ -86,6 +86,8 @@ func TestCheckXraySniffing_ResolvedIPs(t *testing.T) {
 		{"routeOnly with http", `{"enabled":true,"destOverride":["http"],"routeOnly":true}`, resolved, SniffInsufficient, "route_only_resolve"},
 		{"routeOnly with an empty override never sets a route target", `{"enabled":true,"destOverride":[],"routeOnly":true}`, resolved, SniffOK, ""},
 		{"routeOnly with fakedns only never sets a route target", `{"enabled":true,"destOverride":["fakedns"],"routeOnly":true}`, resolved, SniffOK, ""},
+		{"routeOnly with fakedns+others never sets a route target", `{"enabled":true,"destOverride":["fakedns+others"],"routeOnly":true}`, resolved, SniffOK, ""},
+		{"routeOnly with fakedns+others and tls", `{"enabled":true,"destOverride":["FakeDNS+Others","tls"],"routeOnly":true}`, resolved, SniffInsufficient, "route_only_resolve"},
 		{"routeOnly with fakedns and http", `{"enabled":true,"destOverride":["fakedns","http"],"routeOnly":true}`, resolved, SniffInsufficient, "route_only_resolve"},
 		{"routeOnly with a full override", `{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}`, resolved, SniffInsufficient, "route_only_resolve"},
 		{"disabled with domains is still injected", `{"enabled":false}`, resolved | SniffForDomains, SniffInject, "sniffing_disabled"},

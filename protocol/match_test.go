@@ -355,3 +355,79 @@ func TestReport_NeverChangesAVerdictAcrossResolvedInputs(t *testing.T) {
 		}
 	}
 }
+
+// The invariants report-only rests on, stated as pairs of policies that differ
+// in one respect, over both modes and many hostnames, resolutions and subjects.
+// "permits" means the verdict is not block.
+//
+// The older enforce-vs-report test above tolerates a block becoming an allow:
+// in the report form a phase-5 observe rule falls behind a phase-4 group member
+// allow, which enforce mode's phase-3 block did not, so the connection is let
+// through (and not recorded). That is the documented lower bound, not a change
+// in what report-only is allowed to do, so the pairs below compare what holds
+// without that exception.
+func TestReport_InvariantPairsAcrossResolvedInputs(t *testing.T) {
+	base := []DestinationRule{
+		{ID: "p1", Action: RuleAllow, Domains: []string{"full:ok.example"}, CIDRs: []string{"192.0.2.0/24"}},
+		{ID: "p2", Action: RuleBlock, CIDRs: []string{"10.0.0.0/8"}},
+		{ID: "p3", Action: RuleBlock, Private: true},
+		{ID: "p4", Action: RuleBlock, Domains: []string{"domain:bad.example"}},
+	}
+	added := []DestinationRule{
+		{ID: "p5", Action: RuleObserve, Domains: []string{"full:member.example", "full:obs.example"}},
+		{ID: "p6", Action: RuleObserve, CIDRs: []string{"100.0.0.0/10"}},
+		{ID: "p7", Action: RuleObserve, Private: true},
+	}
+	memberAllow := DestinationRule{ID: "g1x1", Action: RuleAllow, Subjects: []SubjectKey{"usr_1"}, Domains: []string{"full:member.example"}, CIDRs: []string{"8.8.8.0/24"}}
+	groupBlock := DestinationRule{ID: "g1", Action: RuleBlock, Subjects: []SubjectKey{"usr_1"}, CatchAll: true}
+	groupObserve := groupBlock
+	groupObserve.Action = RuleObserve
+	cat := func(parts ...[]DestinationRule) []DestinationRule {
+		var out []DestinationRule
+		for _, part := range parts {
+			out = append(out, part...)
+		}
+		return out
+	}
+	one := func(r DestinationRule) []DestinationRule { return []DestinationRule{r} }
+
+	type pair struct {
+		name     string
+		a, b     []DestinationRule
+		allowSet bool // an allow in a is an allow in b and the reverse
+	}
+	pairs := []pair{
+		{"added observe rules (no group)", base, cat(base, added), true},
+		{"added observe rules (enforcing group)", cat(base, one(memberAllow), one(groupBlock)), cat(base, one(memberAllow), one(groupBlock), added), true},
+		{"added observe rules (group in report state)", cat(base, one(memberAllow), one(groupObserve)), cat(base, one(memberAllow), one(groupObserve), added), true},
+		{"no group vs group in report state", base, cat(base, one(memberAllow), one(groupObserve)), false},
+		{"no group vs group in report state, with observe rules", cat(base, added), cat(base, one(memberAllow), one(groupObserve), added), false},
+	}
+	targets := []string{"a.example", "ok.example", "x.bad.example", "member.example", "obs.example", "10.1.1.1", "8.8.8.8", "192.0.2.4", "100.1.1.1"}
+	resolutions := [][]string{nil, {}, {"8.8.8.8"}, {"10.1.1.1"}, {"192.0.2.9"}, {"8.8.8.8", "127.0.0.1"}, {"fd00::1"}, {"100.1.1.1"}, {"8.8.8.9", "100.2.2.2"}}
+	for _, mode := range []ResolveMode{ResolveAsIs, ResolveOnDemand} {
+		for _, p := range pairs {
+			a := &DestinationPolicy{Rules: p.a, Resolve: mode}
+			b := &DestinationPolicy{Rules: p.b, Resolve: mode}
+			for _, policy := range []*DestinationPolicy{a, b} {
+				if err := ValidateDestinationPolicy(policy); err != nil {
+					t.Fatalf("%s: %v", p.name, err)
+				}
+			}
+			for _, target := range targets {
+				for _, resolved := range resolutions {
+					for _, subject := range []SubjectKey{"usr_1", "usr_2", "usr_3"} {
+						in := MatchInput{Target: target, Resolved: resolved, Subject: subject}
+						av, bv := MatchDestination(a, in).Verdict, MatchDestination(b, in).Verdict
+						if (av == MatchBlock) != (bv == MatchBlock) {
+							t.Fatalf("%s [%s] %q %v %s: block vs permit changed: %s -> %s", p.name, mode, target, resolved, subject, av, bv)
+						}
+						if p.allowSet && (av == MatchAllow) != (bv == MatchAllow) {
+							t.Fatalf("%s [%s] %q %v %s: allow changed: %s -> %s", p.name, mode, target, resolved, subject, av, bv)
+						}
+					}
+				}
+			}
+		}
+	}
+}

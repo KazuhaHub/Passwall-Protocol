@@ -97,7 +97,7 @@ silently run AsIs. It is not an upgrade capability either. A policy that needs
 `on_demand` also needs `SniffForResolvedIPs` from `CheckXraySniffing`: nothing is
 injected, sniffing that is off or `metadataOnly` is fine, and an inbound with
 `routeOnly: true` whose `destOverride` can accept a sniffed name (anything but
-an empty list or `fakedns` alone) is insufficient (`route_only_resolve`). Xray's
+an empty list, `fakedns` or `fakedns+others`) is insufficient (`route_only_resolve`). Xray's
 `domainStrategy` is router-wide, so one such inbound keeps the whole node AsIs.
 
 What is shared beyond the types: `ValidateDestinationPolicy`,
