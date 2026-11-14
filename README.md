@@ -109,6 +109,52 @@ rather than the address the client asked for. `conformance.SniffingVectors` and
   search list (common under Docker and Kubernetes), so the connection can go to
   a name the domain rules never saw. Domain rules judge the name the client sent.
 
+## Audit observation
+
+`NodeReport.Audit` is the node's record of which destination rules fired: hits
+per hour (rule, action, subject, destination, port) and, optionally, which
+sites each person used. Hits need the capability `audit.hits.v1` and usage rows
+also need `audit.usage.v1`; like the policy capability, neither is an upgrade
+capability. A node with nothing to report sends no `audit` at all, and a report
+without one is byte-identical to v0.3.0.
+
+- **Report-only.** A hit with action `observe` on a policy (`p*`) or source rule
+  (`s*`) means the connection was allowed and would have been blocked, and it
+  carries subject, destination and port like a block. On a group (`g*`) it is a
+  trial row, folded on the node: no subject, port 0, and the destination is the
+  registrable domain or `(ip)`.
+- **Spelling.** `Dest` and `Site` are lowercase ASCII hostnames with no leading
+  or trailing dot, no empty label and labels of at most 63 bytes (253 in all),
+  or, for `Dest` only, an address in canonical `netip` form: no zone, no port,
+  no brackets, and an IPv4-mapped IPv6 address is refused (unmap it first).
+  `Site` and a trial row's `Dest` are never an address (written `(ip)`) and their
+  last label is never a number (`3.4`, `1.2.3`, `0x7f000001` are refused;
+  `1.example.com` and `123.com` are fine). A single-label host or a public suffix
+  (`localhost`, `github.io`) has no registrable domain, so the host itself is
+  used.
+- **Drops are counted per kind** (`dropped_hits`, `dropped_trial`,
+  `dropped_usage`) so a lost block hit is distinguishable from trial or usage
+  overflow. Validation errors never repeat the rejected value.
+- **Rule IDs** follow the policy's: a source rule (`s*`) has no `x` suffix, a
+  group's `x<k>` rules are allows and never hit, and `allow` is never an action.
+- **Capabilities.** Usage rows are the second tier of recording and presuppose
+  the first, so an observation with any usage needs both `audit.hits.v1` and
+  `audit.usage.v1`.
+- **No source address** is carried anywhere, for source rules too.
+- **Validation is separate.** `ValidateAuditObservation` checks the subtree by
+  itself (`ValidateAuditHit` and `ValidateAuditUsage` check one row, for the
+  node's aggregator). It is not part of `ValidateNodeReportBase`, so the panel
+  can drop a bad batch without losing the node's roster. The sender-side
+  `ValidateNodeReport` does check it, and binds it to the capabilities.
+- **Not durable.** A node restart loses the batch it had not yet sent.
+- **Limits.** 4096 hit rows, 8192 usage rows and 1 MiB encoded. The row limits
+  are separate caps: with ordinary values both full is over the byte limit, so a
+  node trims rows to fit.
+
+Registrable domains are computed on the node, which has the public suffix list;
+this module only checks the shape of the result. `conformance.AuditVectors`
+pins the accept and reject sets for every implementation.
+
 ## Development
 
 ```bash

@@ -67,6 +67,13 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzCheckXraySniffing$' -fuzztime 60s
 
+      # The audit batch, the largest subtree a node sends and the one with the
+      # most rows in it. The panel decodes and validates it by itself, so this is
+      # its whole door.
+      - name: fuzz ValidateAuditObservation
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: GOWORK=off go test ./protocol -run '^$' -fuzz '^FuzzValidateAuditObservation$' -fuzztime 60s
+
       # THE STANDARD LIBRARY IS THIS MODULE'S ONE DEPENDENCY, and it has
       # advisories. Which standard library is the consumer's choice, so the scan
       # runs under each consumer's toolchain, the list the consumer-toolchain
