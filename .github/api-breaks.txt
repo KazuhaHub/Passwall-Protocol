@@ -10,3 +10,7 @@
 # the tag is cut. Empty the list once the next tag is cut: it describes the
 # difference from the latest tag, and the step reports entries that no longer
 # differ.
+
+# Resolved []string makes MatchInput incomparable (== and map keys no longer
+# compile). The panel and node only pass it by value to MatchDestination.
+- ./protocol.MatchInput: old is comparable, new is not

@@ -27,6 +27,7 @@ type SniffingVector struct {
 const (
 	needDomains   = protocol.SniffForDomains
 	needProtocols = protocol.SniffForProtocols
+	needResolved  = protocol.SniffForResolvedIPs
 )
 
 // SniffingVectors is the shared table. Append to it; never edit a verdict to
@@ -112,6 +113,31 @@ var SniffingVectors = []SniffingVector{
 	{Name: "domains and protocols, satisfied", Raw: `{"enabled":true,"destOverride":["http","tls","quic"]}`, Need: needDomains | needProtocols,
 		Verdict: protocol.SniffOK},
 
+	// --- SniffForResolvedIPs (IPOnDemand) --------------------------------------
+	// Xray resolves the name the router sees. With routeOnly the sniffed name
+	// replaces the real target for that resolution while the connection still
+	// goes to the real address, so a fake SNI picks the addresses that are
+	// judged. Sniffing that is off or metadata-only changes no target, and this
+	// need asks the node to inject nothing.
+	{Name: "resolve: absent", Raw: "", Need: needResolved, Verdict: protocol.SniffOK},
+	{Name: "resolve: disabled", Raw: `{"enabled":false}`, Need: needResolved, Verdict: protocol.SniffOK},
+	{Name: "resolve: enabled with routeOnly false", Raw: `{"enabled":true,"routeOnly":false}`, Need: needResolved, Verdict: protocol.SniffOK},
+	{Name: "resolve: metadataOnly", Raw: `{"enabled":true,"metadataOnly":true}`, Need: needResolved, Verdict: protocol.SniffOK},
+	{Name: "resolve: routeOnly", Raw: `{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}`, Need: needResolved,
+		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
+	{Name: "resolve: routeOnly without an override", Raw: `{"enabled":true,"routeOnly":true}`, Need: needResolved,
+		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
+	{Name: "resolve with domains: disabled is still injected", Raw: `{"enabled":false}`, Need: needResolved | needDomains,
+		Verdict: protocol.SniffInject, Reason: "sniffing_disabled"},
+	{Name: "resolve with domains: routeOnly keeps the domain reason", Raw: `{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}`,
+		Need: needResolved | needDomains, Verdict: protocol.SniffInsufficient, Reason: "route_only"},
+	{Name: "resolve with domains: satisfied", Raw: `{"enabled":true,"destOverride":["http","tls","quic"]}`, Need: needResolved | needDomains, Verdict: protocol.SniffOK},
+	{Name: "resolve with protocols: metadataOnly is insufficient for the protocols", Raw: `{"enabled":true,"metadataOnly":true}`,
+		Need: needResolved | needProtocols, Verdict: protocol.SniffInsufficient, Reason: "metadata_only"},
+	{Name: "resolve with protocols: routeOnly", Raw: `{"enabled":true,"routeOnly":true}`, Need: needResolved | needProtocols,
+		Verdict: protocol.SniffInsufficient, Reason: "route_only_resolve"},
+	{Name: "resolve: malformed", Raw: `{"enabled":`, Need: needResolved, Malformed: true},
+
 	{Name: "truncated json", Raw: `{"enabled":true`, Need: needDomains, Malformed: true},
 	{Name: "array is not an object", Raw: `[]`, Need: needDomains, Malformed: true},
 	{Name: "string is not an object", Raw: `"on"`, Need: needProtocols, Malformed: true},
@@ -165,6 +191,11 @@ func policyOf(rules ...protocol.DestinationRule) *protocol.DestinationPolicy {
 	return &protocol.DestinationPolicy{Rules: rules}
 }
 
+// onDemandOf is policyOf with Resolve set to on_demand.
+func onDemandOf(rules ...protocol.DestinationRule) *protocol.DestinationPolicy {
+	return &protocol.DestinationPolicy{Rules: rules, Resolve: protocol.ResolveOnDemand}
+}
+
 func hit(id, entry string) protocol.MatchStep {
 	return protocol.MatchStep{RuleID: id, Result: protocol.StepHit, Entry: entry}
 }
@@ -186,11 +217,12 @@ var (
 	blockExample = protocol.DestinationRule{ID: "p1", Action: protocol.RuleBlock, Domains: []string{"domain:example.com"}}
 	// blockOther is a block rule over domains the trailing-dot targets never
 	// match, so what a vector shows is the builtin and not this rule.
-	blockOther = protocol.DestinationRule{ID: "p2", Action: protocol.RuleBlock, Domains: []string{"full:other.example"}}
-	usr1       = protocol.NewSubjectKey(1)
-	usr2       = protocol.NewSubjectKey(2)
-	lst1       = protocol.NewListenerKey(1)
-	lst2       = protocol.NewListenerKey(2)
+	blockCIDR10 = protocol.DestinationRule{ID: "p1", Action: protocol.RuleBlock, CIDRs: []string{"10.0.0.0/8"}}
+	blockOther  = protocol.DestinationRule{ID: "p2", Action: protocol.RuleBlock, Domains: []string{"full:other.example"}}
+	usr1        = protocol.NewSubjectKey(1)
+	usr2        = protocol.NewSubjectKey(2)
+	lst1        = protocol.NewListenerKey(1)
+	lst2        = protocol.NewListenerKey(2)
 )
 
 // DestinationMatchVectors cover every clause of the matching semantics. Each
@@ -479,4 +511,52 @@ var DestinationMatchVectors = []DestinationMatchVector{
 		Steps: []protocol.MatchStep{builtinStep("miss"), step("p1", "miss")}},
 	{Name: "nil policy is the default", Policy: nil,
 		Input: protocol.MatchInput{Target: "other.net"}, Verdict: "default"},
+
+	// --- Resolve: on_demand ------------------------------------------------------
+	// Under on_demand the core resolves a hostname the first time a rule asks for
+	// its addresses, so the CIDR and Private alternatives of a rule are tried on
+	// the resolved addresses (any one is enough), in rule order. The result is the
+	// reference answer with those addresses as input. Resolved nil means the
+	// caller has none, which makes those alternatives untestable; Resolved empty
+	// means the lookup came back with nothing.
+	{Name: "on_demand: a resolved address in a blocked cidr blocks the hostname", Policy: onDemandOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"10.1.1.1"}}, Verdict: "block", Terminated: "p1",
+		Steps: []protocol.MatchStep{hit("p1", "10.0.0.0/8")}},
+	{Name: "on_demand: any resolved address is enough", Policy: onDemandOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8", "10.1.1.1"}}, Verdict: "block", Terminated: "p1"},
+	{Name: "on_demand: private table on a resolved address", Policy: onDemandOf(protocol.DestinationRule{ID: "p1", Action: protocol.RuleBlock, Private: true}),
+		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"127.0.0.1"}}, Verdict: "block", Terminated: "p1",
+		Steps: []protocol.MatchStep{hit("p1", "127.0.0.0/8")}},
+	{Name: "on_demand: resolved addresses that miss", Policy: onDemandOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8"}}, Verdict: "default",
+		Steps: []protocol.MatchStep{step("p1", "miss")}},
+	{Name: "on_demand: an allow on a resolved cidr precedes a block", Policy: onDemandOf(
+		protocol.DestinationRule{ID: "p1", Action: protocol.RuleAllow, CIDRs: []string{"8.8.8.0/24"}},
+		protocol.DestinationRule{ID: "p2", Action: protocol.RuleBlock, Private: true}),
+		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"8.8.8.8"}}, Verdict: "allow", Terminated: "p1",
+		Steps: []protocol.MatchStep{hit("p1", "8.8.8.0/24"), step("p2", "skipped")}},
+	{Name: "on_demand: observe on a resolved range is recorded", Policy: onDemandOf(protocol.DestinationRule{ID: "p1", Action: protocol.RuleObserve, CIDRs: []string{"10.0.0.0/8"}}),
+		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"10.1.1.1"}}, Verdict: "observe", Terminated: "p1"},
+	{Name: "on_demand: no resolution given makes the ip rule untestable", Policy: onDemandOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "a.example"}, Verdict: "default", Conditional: true,
+		Notes: []protocol.MatchNote{protocol.NoteHostnameNeedsResolution},
+		Steps: []protocol.MatchStep{step("p1", "untestable")}},
+	{Name: "on_demand: an untestable ip rule does not stop a later domain rule", Policy: onDemandOf(blockCIDR10,
+		protocol.DestinationRule{ID: "p2", Action: protocol.RuleBlock, Domains: []string{"full:a.example"}}),
+		Input: protocol.MatchInput{Target: "a.example"}, Verdict: "block", Terminated: "p2", Conditional: true,
+		Notes: []protocol.MatchNote{protocol.NoteHostnameNeedsResolution},
+		Steps: []protocol.MatchStep{builtinStep("miss"), step("p1", "untestable"), hit("p2", "full:a.example")}},
+	{Name: "on_demand: the domain alternative of a rule hits without resolution", Policy: onDemandOf(protocol.DestinationRule{
+		ID: "p1", Action: protocol.RuleBlock, Domains: []string{"full:a.example"}, CIDRs: []string{"10.0.0.0/8"}}),
+		Input: protocol.MatchInput{Target: "a.example"}, Verdict: "block", Terminated: "p1"},
+	{Name: "on_demand: an empty resolution misses and is engine dependent", Policy: onDemandOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "nx.example", Resolved: []string{}}, Verdict: "default",
+		Notes: []protocol.MatchNote{protocol.NoteResolutionFailedEngineDependent},
+		Steps: []protocol.MatchStep{step("p1", "miss")}},
+	{Name: "on_demand: an address target is matched as it is", Policy: onDemandOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "10.1.1.1", Resolved: []string{"8.8.8.8"}}, Verdict: "block", Terminated: "p1"},
+	{Name: "as_is: resolved addresses are ignored", Policy: policyOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"10.1.1.1"}}, Verdict: "default",
+		Notes: []protocol.MatchNote{protocol.NoteHostnameSkipsIPRules},
+		Steps: []protocol.MatchStep{step("p1", "miss")}},
 }

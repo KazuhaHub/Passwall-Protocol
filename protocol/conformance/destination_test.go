@@ -110,6 +110,9 @@ func TestDestinationMatchVectorsCoverTheSemantics(t *testing.T) {
 		"exempt hit marks the result", "source deny runs first", "group allow after global block",
 		"catch-all group block", "observe is recorded and terminates",
 		"later hit is shadowed", "later miss is skipped", "conditional after untestable",
+		"on_demand: a resolved address in a blocked cidr blocks the hostname", "on_demand: any resolved address is enough",
+		"on_demand: private table on a resolved address", "on_demand: no resolution given makes the ip rule untestable",
+		"on_demand: an empty resolution misses and is engine dependent", "as_is: resolved addresses are ignored",
 		"default when nothing hits", "fields are anded", "port range", "network mismatch",
 	} {
 		if !have[name] {

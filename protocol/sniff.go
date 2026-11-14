@@ -18,6 +18,13 @@ const (
 	SniffForDomains SniffNeed = 1 << iota
 	// SniffForProtocols: the policy has protocol rules (bittorrent).
 	SniffForProtocols
+	// SniffForResolvedIPs: the policy resolves hostnames at routing time
+	// (DestinationPolicy.Resolve is ResolveOnDemand) and has IP rules, so the
+	// name the router resolves must be the name the connection goes to. It asks
+	// for nothing to be turned on: sniffing that is off or metadata-only changes
+	// no target and is fine. What it refuses is routeOnly, which routes by the
+	// sniffed name but connects to the requested address; see CheckXraySniffing.
+	SniffForResolvedIPs
 )
 
 // SniffVerdict is CheckXraySniffing's answer.
@@ -135,13 +142,32 @@ func CheckXraySniffing(raw []byte, need SniffNeed) (SniffVerdict, string, error)
 	if err := validateXrayExclusions(sniffing); err != nil {
 		return "", "", err
 	}
+	// SniffForResolvedIPs alone asks only that no sniffed name stands in for the
+	// real target while the connection goes elsewhere. Sniffing that is off or
+	// metadata-only never does, so there is nothing to inject and nothing to
+	// refuse, and only routeOnly is insufficient.
+	resolveOnly := need&^SniffForResolvedIPs == 0
 	if !sniffing.Enabled {
+		if resolveOnly {
+			return SniffOK, "", nil
+		}
 		return SniffInject, "sniffing_disabled", nil
 	}
 	if sniffing.MetadataOnly {
+		if resolveOnly {
+			return SniffOK, "", nil
+		}
 		return SniffInsufficient, "metadata_only", nil
 	}
 	if need&SniffForDomains == 0 {
+		// Only the resolved-address need can still fail here, and only on
+		// routeOnly: with it, the router resolves the sniffed name while the
+		// connection goes to the requested address, so a fake SNI chooses which
+		// addresses the IP rules judge (xray-core features/routing/dns/context.go
+		// prefers the domain over the real IP).
+		if need&SniffForResolvedIPs != 0 && sniffing.RouteOnly {
+			return SniffInsufficient, "route_only_resolve", nil
+		}
 		return SniffOK, "", nil
 	}
 	have := make(map[string]bool, len(sniffing.DestOverride))

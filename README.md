@@ -81,11 +81,30 @@ before a group member allow. PSP sends group rules, and makes an agent eligible
 for an allowlist group's members, only when the agent declared it. It is not an
 upgrade capability either.
 
+`DestinationPolicy.Resolve` (v0.5.0) says how hostnames meet the IP rules
+(`cidrs`, `private`): `""` (omitted, **AsIs**, the default) or `"on_demand"`.
+Under `on_demand` the core resolves the hostname once per connection, the first
+time a rule asks for its addresses, and the IP rules are tried on the resolved
+addresses in rule order, so the answer is the reference matcher with those
+addresses as input. Anything else is invalid, and `"if_non_match"` is refused on
+purpose: running every rule without addresses first reorders rules, so a
+report-only rule could change a verdict and a CIDR block could be skipped in
+front of a group member's allow. AsIs is encoded as the absence of the field, so
+existing policy digests do not change. A non-AsIs value may be sent only to an
+agent that declared **`policy.resolve.v1`**, meaning it compiles `Resolve` on
+every engine it runs; an older agent ignores the unknown field and would
+silently run AsIs. It is not an upgrade capability either. A policy that needs
+`on_demand` also needs `SniffForResolvedIPs` from `CheckXraySniffing`: nothing is
+injected, sniffing that is off or `metadataOnly` is fine, and an inbound with
+`routeOnly: true` is insufficient (`route_only_resolve`).
+
 What is shared beyond the types: `ValidateDestinationPolicy`,
 `ValidatePolicyStatus`, `PolicyDigest`, `CheckXraySniffing` (can this inbound's
 sniffing supply what the policy needs), `MatchDestination` (a pure trace of
 which rule a connection would hit) and `PrivateDestinationCIDRs()` (the table
-behind `private`, taken from xray-core). `XraySniffingInjection()`
+behind `private`, taken from xray-core; under `on_demand` it takes the
+hostname's addresses as `MatchInput.Resolved`, and never resolves anything
+itself). `XraySniffingInjection()`
 is the sniffing object a node writes into an inbound whose sniffing is off.
 Note that it sets `routeOnly` false, so Xray then connects to the sniffed host
 rather than the address the client asked for. `conformance.SniffingVectors` and
@@ -103,15 +122,36 @@ rather than the address the client asked for. `conformance.SniffingVectors` and
   the dotted form**. It fails closed, and that is by design: the alternative is
   a hole in every matcher kind. `MatchDestination` shows it as a step with
   `Builtin: "trailing_dot"`.
-- **No name resolution.** Hostnames are never matched against `cidrs` or
-  `private`; `MatchDestination` says so with `NoteHostnameSkipsIPRules`. Xray's
-  own fallback that blocks private addresses after resolution exists only in the
-  freedom outbound, only for connections that arrived through a vless, vmess,
-  trojan, hysteria, wireguard or shadowsocks inbound, and only after the
-  operator's own final rules. In newer cores it checks after dialing (a client can
-  still probe whether an internal port is open) and is skipped entirely for a
-  handler with `sockopt.dialerProxy`. Do not rely on it. sing-box has no such
-  fallback.
+- **Name resolution (AsIs).** By default hostnames are never matched against
+  `cidrs` or `private`; `MatchDestination` says so with `NoteHostnameSkipsIPRules`.
+  Xray's own fallback that blocks private addresses after resolution exists only
+  in the freedom outbound, only for connections that arrived through a vless,
+  vmess, trojan, hysteria, wireguard or shadowsocks inbound, and only after the
+  operator's own final rules. In newer cores it checks after dialing (a client
+  can still probe whether an internal port is open) and is skipped entirely for
+  a handler with `sockopt.dialerProxy`. Do not rely on it. sing-box has no such
+  fallback. Under AsIs, a connection that Xray rewrites to a sniffed Host or SNI
+  is judged by domain rules only: whatever address that name resolves to is
+  reached, private ranges included.
+- **Name resolution (`on_demand`).** The IP rules judge the resolved addresses.
+  What a caller must know:
+  - *Failure mode differs.* If the lookup fails, Xray's IP rules simply miss and
+    the connection goes on (fail open); sing-box fails the connection (fail
+    closed). `MatchDestination` reports an empty `Resolved` as a miss plus
+    `NoteResolutionFailedEngineDependent`.
+  - *Matched is not always dialed.* Xray resolves again when it dials, so a
+    rebinding or round-robin name can be matched on one address and dialed on
+    another. sing-box dials the addresses it matched.
+  - *`routeOnly: true` inbounds cannot run it.* There the sniffed name replaces
+    the real target for the lookup while the connection still goes to the real
+    address, so a fake SNI would choose the addresses that are judged. Such an
+    inbound stays AsIs (`SniffForResolvedIPs` is insufficient).
+  - *Any resolved address is a match.* A block is conservative; a CIDR **allow**
+    is permissive, because the dial may use another address.
+  - *Cost.* One extra lookup per hostname connection that reaches an IP rule.
+  - *The trace needs the addresses.* PSP's resolver is not the node's, so
+    `MatchDestination` resolves nothing: without `Resolved` the IP rules are
+    untestable and the result is conditional (`NoteHostnameNeedsResolution`).
 - **Search-list expansion.** A dotless hostname can be expanded by the node's DNS
   search list (common under Docker and Kubernetes), so the connection can go to
   a name the domain rules never saw. Domain rules judge the name the client sent.

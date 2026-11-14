@@ -56,12 +56,13 @@ var privatePrefixes = sync.OnceValue(func() []netip.Prefix {
 // "unknown", and a rule that depends on an unknown field is untestable rather
 // than a miss.
 type MatchInput struct {
-	Subject SubjectKey  // "" = not exempt, in no group
-	Inbound ListenerKey // "" = unknown inbound: rules with Inbounds are untestable
-	Source  string      // client IP; "" = unknown: SourceCIDRs rules are untestable
-	Target  string      // hostname or IP literal
-	Port    uint16      // 0 = unknown: rules with Ports are untestable
-	Network string      // "tcp" | "udp" | "" (unknown)
+	Subject  SubjectKey  // "" = not exempt, in no group
+	Inbound  ListenerKey // "" = unknown inbound: rules with Inbounds are untestable
+	Source   string      // client IP; "" = unknown: SourceCIDRs rules are untestable
+	Target   string      // hostname or IP literal
+	Port     uint16      // 0 = unknown: rules with Ports are untestable
+	Network  string      // "tcp" | "udp" | "" (unknown)
+	Resolved []string
 }
 
 // MatchStepResult is how one step of the trace came out.
@@ -116,10 +117,12 @@ const BuiltinTrailingDot MatchBuiltin = "trailing_dot"
 // is not itself a verdict.
 type MatchNote string
 
-// NoteHostnameSkipsIPRules: the target is a hostname and the policy has rules
-// over CIDRs or Private that were evaluated and did not hit. Those rules match
-// addresses only, and nothing here resolves the hostname (the core routes with
-// AsIs), so a hostname that resolves into a blocked range is not matched. On
+// NoteHostnameSkipsIPRules: the target is a hostname, the policy resolves
+// nothing (ResolveAsIs), and it has rules over CIDRs or Private that were
+// evaluated and did not hit. Those rules match addresses only, and the core
+// routes with AsIs, so a hostname that resolves into a blocked range is not
+// matched. Under ResolveOnDemand this note is not used; see
+// NoteHostnameNeedsResolution and NoteResolutionFailedEngineDependent. On
 // Xray, freedom has a default block of private destinations that can stop such a
 // name after resolution, but only in the cases listed below; sing-box has none.
 // The note lets the panel say so instead of reporting a clean miss.
@@ -147,6 +150,11 @@ type MatchNote string
 // blocked range is simply let through.
 const NoteHostnameSkipsIPRules MatchNote = "hostname_skips_ip_rules"
 
+const (
+	NoteHostnameNeedsResolution         MatchNote = "hostname_needs_resolution"
+	NoteResolutionFailedEngineDependent MatchNote = "resolution_failed_engine_dependent"
+)
+
 // MatchStep is one line of the trace.
 type MatchStep struct {
 	RuleID string // "" with Exempt == true for the exempt step, or with Builtin set
@@ -171,9 +179,11 @@ type MatchResult struct {
 // is for the panel's "test this destination" tool, so it explains rather than
 // decides: every rule gets a step, and what it could not know is said so.
 //
-// It is pure and does no resolution: a hostname is never matched against CIDRs
-// (the core routes with AsIs, no DNS), and an address is never matched against
-// domains.
+// It is pure and does no resolution. Under ResolveAsIs a hostname is never
+// matched against CIDRs (the core routes with AsIs, no DNS). Under
+// ResolveOnDemand a hostname's CIDR and Private alternatives are tried on
+// MatchInput.Resolved, which the caller supplies. An address is never matched
+// against domains.
 //
 // EVERY MATCHER SEES THE HOST AS WRITTEN, lowercased, as xray-core's does. A
 // hostname with a trailing dot is therefore NOT the same host to `domain:`,
@@ -184,12 +194,18 @@ type MatchResult struct {
 // is then block with Terminated "". See BuiltinTrailingDot for why the host is
 // blocked and not normalised.
 //
-// THERE IS NO NAME RESOLUTION. A hostname is never matched against CIDRs or
-// Private, so a hostname that resolves into a blocked range is not matched, and
-// the result says so with NoteHostnameSkipsIPRules. This is a documented
-// limitation, not a gap to fill here. Xray's freedom has a default private-IP
-// block that applies only in the cases NoteHostnameSkipsIPRules lists; sing-box
-// has none.
+// THIS FUNCTION DOES NO NAME RESOLUTION. Under ResolveAsIs a hostname is never
+// matched against CIDRs or Private, so a hostname that resolves into a blocked
+// range is not matched, and the result says so with NoteHostnameSkipsIPRules.
+// That is a documented limitation of AsIs. Xray's freedom has a default
+// private-IP block that applies only in the cases NoteHostnameSkipsIPRules
+// lists; sing-box has none. Under ResolveOnDemand the answer for a hostname
+// depends on what it resolves to, which only the caller can say (PSP's resolver
+// is not the node's, so it must not look the name up on the node's behalf): pass
+// it as Resolved, or leave it nil and read the trace as conditional
+// (NoteHostnameNeedsResolution). With the addresses given, the result is the
+// reference answer. Any address matching is a match, in rule order, and an empty
+// resolution misses every IP rule (NoteResolutionFailedEngineDependent).
 //
 // DOMAIN RULES JUDGE THE NAME AS SENT. A dotless hostname can be expanded by the
 // node's DNS search list (common under Docker and Kubernetes), so the connection
@@ -210,6 +226,7 @@ func MatchDestination(policy *DestinationPolicy, in MatchInput) MatchResult {
 		return result
 	}
 	target := newMatchTarget(in.Target)
+	res := newResolution(policy, in)
 	exemptDone := len(policy.Exempt) == 0
 	builtinDone := !hasBlockDomains(policy)
 	finished := false
@@ -270,12 +287,12 @@ func MatchDestination(policy *DestinationPolicy, in MatchInput) MatchResult {
 		}
 		// A rule with an id or action this package does not know has no verdict to
 		// give, so it never hits (rather than terminating with an invented one).
-		outcome, entry, ipSkipped := StepMiss, "", false
+		outcome, entry, ipNote := StepMiss, "", MatchNote("")
 		if known {
-			outcome, entry, ipSkipped = matchRule(rule, in, target)
+			outcome, entry, ipNote = matchRule(rule, in, target, res)
 		}
-		if ipSkipped && outcome != StepHit && !finished && !noted {
-			result.Notes = append(result.Notes, NoteHostnameSkipsIPRules)
+		if ipNote != "" && outcome != StepHit && !finished && !noted {
+			result.Notes = append(result.Notes, ipNote)
 			noted = true
 		}
 		step := MatchStep{RuleID: rule.ID}
@@ -392,16 +409,19 @@ func newMatchTarget(raw string) matchTarget {
 
 // matchRule evaluates one rule. Fields are ANDed, and a definite miss on any of
 // them beats an untestable one, because the rule cannot hit either way.
-func matchRule(rule DestinationRule, in MatchInput, target matchTarget) (outcome MatchStepResult, entry string, ipSkipped bool) {
+//
+// ipNote is the note owed when the rule's IP alternatives were evaluated on a
+// hostname and the rule did not hit, or "" when there is none.
+func matchRule(rule DestinationRule, in MatchInput, target matchTarget, res resolution) (outcome MatchStepResult, entry string, ipNote MatchNote) {
 	untestable := false
 	if len(rule.Subjects) > 0 && (in.Subject == "" || !containsKey(rule.Subjects, in.Subject)) {
-		return StepMiss, "", ipSkipped
+		return StepMiss, "", ipNote
 	}
 	if len(rule.Inbounds) > 0 {
 		if in.Inbound == "" {
 			untestable = true
 		} else if !containsListener(rule.Inbounds, in.Inbound) {
-			return StepMiss, "", ipSkipped
+			return StepMiss, "", ipNote
 		}
 	}
 	if len(rule.SourceCIDRs) > 0 {
@@ -409,28 +429,31 @@ func matchRule(rule DestinationRule, in MatchInput, target matchTarget) (outcome
 		if !ok {
 			untestable = true
 		} else if matched := firstPrefix(rule.SourceCIDRs, source); matched == "" {
-			return StepMiss, "", ipSkipped
+			return StepMiss, "", ipNote
 		} else {
 			entry = matched
 		}
 	}
 	if len(rule.Domains) > 0 || len(rule.CIDRs) > 0 || rule.Private {
-		// The IP alternatives cannot be tried on a hostname: nothing resolves it.
-		ipSkipped = target.isHostname() && (len(rule.CIDRs) > 0 || rule.Private)
-		switch matched := matchDestinationGroup(rule, target); {
+		hasIP := len(rule.CIDRs) > 0 || rule.Private
+		ipNote = res.note(target, hasIP)
+		switch matched := matchDestinationGroup(rule, target, res); {
 		case target.unknown:
 			untestable = true
-		case matched == "":
-			return StepMiss, "", ipSkipped
-		default:
+		case matched != "":
 			entry = matched
+		case ipNote == NoteHostnameNeedsResolution:
+			// The IP alternatives could not be tried, so the group might still hit.
+			untestable = true
+		default:
+			return StepMiss, "", ipNote
 		}
 	}
 	if rule.Ports != "" {
 		if in.Port == 0 {
 			untestable = true
 		} else if !portIn(rule.Ports, in.Port) {
-			return StepMiss, "", ipSkipped
+			return StepMiss, "", ipNote
 		}
 	}
 	if rule.Network != "" {
@@ -439,7 +462,7 @@ func matchRule(rule DestinationRule, in MatchInput, target matchTarget) (outcome
 		switch network := strings.ToLower(strings.TrimSpace(in.Network)); network {
 		case "tcp", "udp":
 			if network != rule.Network {
-				return StepMiss, "", ipSkipped
+				return StepMiss, "", ipNote
 			}
 		default:
 			untestable = true
@@ -451,9 +474,9 @@ func matchRule(rule DestinationRule, in MatchInput, target matchTarget) (outcome
 		untestable = true
 	}
 	if untestable {
-		return StepUntestable, "", ipSkipped
+		return StepUntestable, "", ipNote
 	}
-	return StepHit, entry, ipSkipped
+	return StepHit, entry, ipNote
 }
 
 func containsListener(keys []ListenerKey, want ListenerKey) bool {
@@ -476,7 +499,10 @@ func firstPrefix(cidrs []string, addr netip.Addr) string {
 
 // matchDestinationGroup is the OR of Domains, CIDRs and Private. It returns the
 // entry that matched, or "" for none.
-func matchDestinationGroup(rule DestinationRule, target matchTarget) string {
+//
+// A hostname is tried on Domains, and under ResolveOnDemand with Resolved given,
+// then on CIDRs and Private against each resolved address (any one is enough).
+func matchDestinationGroup(rule DestinationRule, target matchTarget, res resolution) string {
 	if target.unknown {
 		return ""
 	}
@@ -486,17 +512,75 @@ func matchDestinationGroup(rule DestinationRule, target matchTarget) string {
 				return entry
 			}
 		}
+		if res.onDemand {
+			return matchAddresses(rule, res.addrs)
+		}
 		return ""
 	}
-	if matched := firstPrefix(rule.CIDRs, target.addr); matched != "" {
-		return matched
+	return matchAddresses(rule, []netip.Addr{target.addr})
+}
+
+// matchAddresses is the CIDRs and Private alternatives against a set of
+// addresses: the first CIDR (in rule order) that contains any of them, then the
+// first private prefix that does.
+func matchAddresses(rule DestinationRule, addrs []netip.Addr) string {
+	for _, cidr := range rule.CIDRs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if prefix.Contains(addr) {
+				return cidr
+			}
+		}
 	}
 	if rule.Private {
 		for _, prefix := range privatePrefixes() {
-			if prefix.Contains(target.addr) {
-				return prefix.String()
+			for _, addr := range addrs {
+				if prefix.Contains(addr) {
+					return prefix.String()
+				}
 			}
 		}
+	}
+	return ""
+}
+
+// resolution is what MatchDestination knows about a hostname's addresses.
+type resolution struct {
+	onDemand bool         // the policy resolves hostnames (and the input is read for them)
+	given    bool         // the input carries Resolved (possibly empty)
+	addrs    []netip.Addr // Resolved, parsed; entries that are not addresses dropped
+}
+
+func newResolution(policy *DestinationPolicy, in MatchInput) resolution {
+	res := resolution{onDemand: policy.Resolve == ResolveOnDemand, given: in.Resolved != nil}
+	if !res.onDemand {
+		return res
+	}
+	for _, text := range in.Resolved {
+		if addr, _, ok := parseAddress(text); ok {
+			res.addrs = append(res.addrs, addr)
+		}
+	}
+	return res
+}
+
+// note is the note a rule with IP alternatives owes on this target, "" when the
+// target is not a hostname or the rule has none, or when the resolved addresses
+// were tried. It is only reported if the rule then did not hit.
+func (res resolution) note(target matchTarget, hasIP bool) MatchNote {
+	if !target.isHostname() || !hasIP {
+		return ""
+	}
+	switch {
+	case !res.onDemand:
+		return NoteHostnameSkipsIPRules
+	case !res.given:
+		return NoteHostnameNeedsResolution
+	case len(res.addrs) == 0:
+		return NoteResolutionFailedEngineDependent
 	}
 	return ""
 }
