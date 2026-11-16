@@ -51,7 +51,7 @@ func ValidateNodeReportBase(report NodeReport) error {
 	if report.Partial {
 		if len(report.Objects) != 0 || len(report.ListenerCounters) != 0 ||
 			len(report.Clients) != 0 || len(report.Subjects) != 0 ||
-			len(report.ForwardCounters) != 0 {
+			len(report.ForwardCounters) != 0 || len(report.LinkCounters) != 0 {
 			return fmt.Errorf("partial report must omit full enumerations")
 		}
 		return validateOutbox(report)
@@ -96,6 +96,22 @@ func ValidateNodeReportBase(report NodeReport) error {
 			return fmt.Errorf("duplicate forward counter %q", counter.Key)
 		}
 		seenForwards[counter.Key] = struct{}{}
+	}
+	if len(report.LinkCounters) > 2*MaxLinks {
+		return fmt.Errorf("link_counters has %d entries, maximum is %d", len(report.LinkCounters), 2*MaxLinks)
+	}
+	seenLinks := make(map[LinkKey]struct{}, len(report.LinkCounters))
+	for _, counter := range report.LinkCounters {
+		if _, err := counter.Key.RowID(); err != nil {
+			return err
+		}
+		if counter.UpBytes < 0 || counter.DownBytes < 0 {
+			return fmt.Errorf("link %s has negative counters", counter.Key)
+		}
+		if _, exists := seenLinks[counter.Key]; exists {
+			return fmt.Errorf("duplicate link counter %q", counter.Key)
+		}
+		seenLinks[counter.Key] = struct{}{}
 	}
 	seenClients := make(map[ClientKey]struct{}, len(report.Clients))
 	for _, counter := range report.Clients {
@@ -187,6 +203,9 @@ func ValidateNodeReport(report NodeReport) error {
 	if len(report.ForwardCounters) > 0 && !hasCapability(report.Capabilities, CapabilityTransitForward) {
 		return fmt.Errorf("forward counters without %s capability", CapabilityTransitForward)
 	}
+	if len(report.LinkCounters) > 0 && !hasCapability(report.Capabilities, CapabilityTransitLink) {
+		return fmt.Errorf("link counters without %s capability", CapabilityTransitLink)
+	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is
 		// what the cadence produces on most rounds.
@@ -242,6 +261,10 @@ func validateReportedObject(status ObjectStatus) error {
 		// forward. Both are config-stream objects with the same four states.
 		if strings.HasPrefix(status.Key, forwardKeyPrefix) {
 			if _, err := ForwardKey(status.Key).RowID(); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(status.Key, linkKeyPrefix) {
+			if _, err := LinkKey(status.Key).RowID(); err != nil {
 				return err
 			}
 		} else if _, err := ListenerKey(status.Key).RowID(); err != nil {

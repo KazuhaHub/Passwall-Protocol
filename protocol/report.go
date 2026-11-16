@@ -93,6 +93,11 @@ type NodeReport struct {
 	// nothing to enumerate, and a report without transit stays byte-identical.
 	ForwardCounters []ForwardCounters `json:"forward_counters,omitempty"`
 
+	// LinkCounters is the full cumulative enumeration of links on this agent,
+	// either side. Only an agent that declared CapabilityTransitLink sends
+	// it; absent from a partial report like the other enumerations.
+	LinkCounters []LinkCounters `json:"link_counters,omitempty"`
+
 	// Clients is a FULL enumeration INCLUDING ZERO VALUES. On a report with
 	// Partial=false, absence from this list is a protocol issue, never idleness.
 	// (On a partial report the field is absent wholesale and says nothing; see
