@@ -49,6 +49,12 @@ type ConfigBody struct {
 	// is a hash of these bytes and a single new byte would make every agent in
 	// the fleet re-apply a config that did not change.
 	Policy *DestinationPolicy `json:"policy,omitempty"`
+	// Transit is what this agent relays for other servers, present only for an
+	// agent that advertised CapabilityTransitForward and only while there is
+	// something to relay. omitempty is load-bearing for the same reason as
+	// Policy. Transit objects are not listeners: they are not counted in
+	// Coverage and no client attaches to them.
+	Transit *Transit `json:"transit,omitempty"`
 }
 
 type CoreSelection struct {

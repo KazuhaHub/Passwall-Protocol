@@ -210,6 +210,34 @@ Registrable domains are computed on the node, which has the public suffix list;
 this module only checks the shape of the result. `conformance.AuditVectors`
 pins the accept and reject sets for every implementation.
 
+## Transit forwards
+
+`ConfigBody.Transit.Forwards` asks an agent to relay a port to another server
+unchanged: every connection arriving on `port` goes to `target:target_port`, TCP
+or TCP and UDP. The agent neither authenticates nor decrypts; the landing server
+enforces everything, and it sees the relaying agent's address as the client's.
+It is gated by `transit.forward.v1`, and the gate is mandatory: an agent that
+does not know the field would accept the config, open no port and report it
+applied. Without forwards the field is omitted, so the config of a server that
+relays nothing is byte-identical to before.
+
+- **Keys.** A forward is keyed by `ForwardKey` (`fwd_<id>`), a type of its own:
+  it never parses as a `ListenerKey`, so its traffic cannot be booked against a
+  node.
+- **Convergence.** Each forward is a config-stream object with the usual four
+  states, keyed by its `ForwardKey`. Forwards are not listeners: they are not
+  in `Coverage` and no client attaches to them.
+- **Counters.** `NodeReport.ForwardCounters` is a full-report enumeration like
+  `ListenerCounters`, absent from partial reports. It is transit traffic and is
+  never anyone's usage; the landing already counts the same bytes per user.
+- **Target.** A canonical IP address or a lowercase DNS name, resolved by the
+  core when it dials. A port, brackets, a trailing dot or a numeric last label
+  is refused.
+
+Links (an entry that terminates the user protocol and exits through another
+server) and multi-hop chains are later additions to `Transit`, each behind its
+own capability.
+
 ## Development
 
 ```bash
