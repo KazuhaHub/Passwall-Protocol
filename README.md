@@ -234,9 +234,33 @@ relays nothing is byte-identical to before.
   core when it dials. A port, brackets, a trailing dot or a numeric last label
   is refused.
 
-Links (an entry that terminates the user protocol and exits through another
-server) and multi-hop chains are later additions to `Transit`, each behind its
-own capability.
+## Transit links
+
+A link is the tunnel of a relay line whose entry terminates the user protocol:
+the entry authenticates the user on its own listener and sends the traffic
+through the link to the exit server, which connects to the destination. It is
+gated by `transit.link.v1`, and the gate is mandatory: an agent that does not
+know the fields would serve the bound listeners from its own address.
+
+- **Halves.** The exit holds the link in `Transit.LinksIn` (a listener that
+  accepts only the link's credential and sends traffic straight out); the entry
+  holds it in `Transit.LinksOut` (an outbound that dials the exit). Both are
+  keyed by the same `LinkKey` (`lnk_<id>`), a type of its own. One agent cannot
+  hold both halves of one link.
+- **Egress.** `Transit.Egress` binds an entry's listener to one of its outgoing
+  links. A listener without a binding leaves from the agent itself. Only a
+  listener can be bound; chaining links (multi-hop) is not part of v1.
+- **Protocols.** `ss2022` (a single-user Shadowsocks-2022 key, AES-128 or
+  AES-256) for links that do not cross a censored border; `vless_reality` for
+  links that do. The REALITY private key exists only in `LinkIn`; `LinkOut`
+  carries the public key and has no field for the private one.
+- **Convergence and counters.** Each half is a config-stream object keyed by its
+  `LinkKey`. `NodeReport.LinkCounters` is a full-report enumeration. Link
+  traffic is never anyone's usage: the user is charged once, on the entry's
+  listener.
+
+Multi-hop chains are a later addition to `Transit`, behind a capability of their
+own.
 
 ## Development
 

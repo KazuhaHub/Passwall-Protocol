@@ -57,11 +57,19 @@ const (
 // as Policy: a server with no transit lines must see a config byte-identical to
 // the one before transit existed, or every agent in the fleet re-applies.
 //
-// Only forwards exist today. Links (an entry terminating the user protocol and
-// exiting through another server) and multi-hop chains are later additions to
-// this struct, each behind a capability of its own.
+// Forwards are gated by CapabilityTransitForward; links and egress bindings by
+// CapabilityTransitLink (see link.go). Multi-hop chains are a later addition,
+// behind a capability of its own. Every field is omitempty, so a server that
+// relays nothing keeps the config it had before transit existed.
 type Transit struct {
 	Forwards []Forward `json:"forwards,omitempty"`
+	// LinksIn are the links this agent is the exit of.
+	LinksIn []LinkIn `json:"links_in,omitempty"`
+	// LinksOut are the links this agent is the entry of.
+	LinksOut []LinkOut `json:"links_out,omitempty"`
+	// Egress names which of this agent's listeners leave through which of its
+	// LinksOut. A listener without a binding leaves from this agent itself.
+	Egress []EgressBinding `json:"egress,omitempty"`
 }
 
 // Forward relays every connection arriving on Port to Target:TargetPort
@@ -119,7 +127,7 @@ func ValidateTransit(transit *Transit) error {
 		}
 		seen[forward.Key] = struct{}{}
 	}
-	return nil
+	return validateLinks(transit)
 }
 
 // ValidateForward checks one forward.
@@ -127,11 +135,8 @@ func ValidateForward(forward Forward) error {
 	if _, err := forward.Key.RowID(); err != nil {
 		return err
 	}
-	if forward.Listen != "" {
-		addr, err := netip.ParseAddr(forward.Listen)
-		if err != nil || addr.String() != forward.Listen || addr.Zone() != "" {
-			return fmt.Errorf("forward %s listen %q is not a canonical IP address", forward.Key, forward.Listen)
-		}
+	if err := validateBindAddress(forward.Listen); err != nil {
+		return fmt.Errorf("forward %s listen: %w", forward.Key, err)
 	}
 	if forward.Port < 1 || forward.Port > 65535 {
 		return fmt.Errorf("forward %s port %d is outside 1..65535", forward.Key, forward.Port)
