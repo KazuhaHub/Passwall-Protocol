@@ -86,6 +86,13 @@ type NodeReport struct {
 	// clients (which would double-count a client attached to several listeners).
 	ListenerCounters []ListenerCounters `json:"listener_counters"`
 
+	// ForwardCounters is the full cumulative enumeration of forwards (transit
+	// traffic, never anyone's usage). Only an agent that declared
+	// CapabilityTransitForward sends it, and like the other enumerations it is
+	// absent from a partial report. omitempty: an agent with no forwards has
+	// nothing to enumerate, and a report without transit stays byte-identical.
+	ForwardCounters []ForwardCounters `json:"forward_counters,omitempty"`
+
 	// Clients is a FULL enumeration INCLUDING ZERO VALUES. On a report with
 	// Partial=false, absence from this list is a protocol issue, never idleness.
 	// (On a partial report the field is absent wholesale and says nothing; see

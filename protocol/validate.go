@@ -50,7 +50,8 @@ func ValidateNodeReportBase(report NodeReport) error {
 	}
 	if report.Partial {
 		if len(report.Objects) != 0 || len(report.ListenerCounters) != 0 ||
-			len(report.Clients) != 0 || len(report.Subjects) != 0 {
+			len(report.Clients) != 0 || len(report.Subjects) != 0 ||
+			len(report.ForwardCounters) != 0 {
 			return fmt.Errorf("partial report must omit full enumerations")
 		}
 		return validateOutbox(report)
@@ -79,6 +80,22 @@ func ValidateNodeReportBase(report NodeReport) error {
 			return fmt.Errorf("duplicate listener counter %q", counter.Key)
 		}
 		seenListeners[counter.Key] = struct{}{}
+	}
+	if len(report.ForwardCounters) > MaxForwards {
+		return fmt.Errorf("forward_counters has %d entries, maximum is %d", len(report.ForwardCounters), MaxForwards)
+	}
+	seenForwards := make(map[ForwardKey]struct{}, len(report.ForwardCounters))
+	for _, counter := range report.ForwardCounters {
+		if _, err := counter.Key.RowID(); err != nil {
+			return err
+		}
+		if counter.UpBytes < 0 || counter.DownBytes < 0 {
+			return fmt.Errorf("forward %s has negative counters", counter.Key)
+		}
+		if _, exists := seenForwards[counter.Key]; exists {
+			return fmt.Errorf("duplicate forward counter %q", counter.Key)
+		}
+		seenForwards[counter.Key] = struct{}{}
 	}
 	seenClients := make(map[ClientKey]struct{}, len(report.Clients))
 	for _, counter := range report.Clients {
@@ -165,6 +182,11 @@ func ValidateNodeReport(report NodeReport) error {
 			return fmt.Errorf("audit: %w", err)
 		}
 	}
+	// Forward counters without the capability are a producer bug: the panel
+	// sent no forwards to such an agent, so it has nothing to count.
+	if len(report.ForwardCounters) > 0 && !hasCapability(report.Capabilities, CapabilityTransitForward) {
+		return fmt.Errorf("forward counters without %s capability", CapabilityTransitForward)
+	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is
 		// what the cadence produces on most rounds.
@@ -216,7 +238,13 @@ func validateStreamState(stream string, state StreamState) error {
 func validateReportedObject(status ObjectStatus) error {
 	switch status.Stream {
 	case StreamConfig:
-		if _, err := ListenerKey(status.Key).RowID(); err != nil {
+		// A config object is a listener or, for an agent that relays, a
+		// forward. Both are config-stream objects with the same four states.
+		if strings.HasPrefix(status.Key, forwardKeyPrefix) {
+			if _, err := ForwardKey(status.Key).RowID(); err != nil {
+				return err
+			}
+		} else if _, err := ListenerKey(status.Key).RowID(); err != nil {
 			return err
 		}
 	case StreamRoster:
