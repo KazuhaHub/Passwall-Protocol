@@ -194,6 +194,11 @@ func ValidateNodeReport(report NodeReport) error {
 		if len(report.Audit.Usage) > 0 && !hasCapability(report.Capabilities, CapabilityAuditUsage) {
 			return fmt.Errorf("audit usage rows without %s capability", CapabilityAuditUsage)
 		}
+		for _, hit := range report.Audit.Hits {
+			if hit.Egress != "" && !hasCapability(report.Capabilities, CapabilityAuditHitsEgress) {
+				return fmt.Errorf("audit hit egress without %s capability", CapabilityAuditHitsEgress)
+			}
+		}
 		if err := ValidateAuditObservation(*report.Audit); err != nil {
 			return fmt.Errorf("audit: %w", err)
 		}
