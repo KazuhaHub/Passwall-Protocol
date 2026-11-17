@@ -201,6 +201,21 @@ without one is byte-identical to v0.3.0.
   node's aggregator). It is not part of `ValidateNodeReportBase`, so the panel
   can drop a bad batch without losing the node's roster. The sender-side
   `ValidateNodeReport` does check it, and binds it to the capabilities.
+- **Egress (v0.8.0).** With `audit.hits.egress.v1` (not an upgrade capability;
+  it presupposes `audit.hits.v1`) a hit may carry `egress`, the link
+  (`lnk_<id>`) the connection left through, or would have left through for a
+  block. Empty or absent means it left from the server itself. PSP asks for it
+  with `DestinationPolicy.AuditEgress` (`audit_egress`), set only for an agent
+  that declared the capability, runs Xray and has egress bindings. `egress` is
+  part of the hit's aggregation key, so the same rule and destination through two
+  links are two rows. Both fields are omitted when empty or false: a hit without
+  egress and the digest of a policy without the flag are byte-identical to
+  v0.7.0. A trial row may carry an egress: a link names two servers, not a
+  person. The agent gives hits an egress only while the policy it holds has the
+  flag, and `ValidateDestinationPolicy` refuses the flag without `collect`. A
+  panel that validates an observation on its own checks the capability itself.
+  A panel rolled back below v0.8.0 rejects a batch whose rows differ only in
+  egress, so at most the batch in flight is lost.
 - **Not durable.** A node restart loses the batch it had not yet sent.
 - **Limits.** 4096 hit rows, 8192 usage rows and 1 MiB encoded. The row limits
   are separate caps: with ordinary values both full is over the byte limit, so a

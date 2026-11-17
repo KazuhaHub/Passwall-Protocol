@@ -60,6 +60,9 @@ func TestAuditVectorsCoverTheFieldRules(t *testing.T) {
 		"usage site that is a single-label host", "usage site that is a public suffix",
 		"trial row for a host that is a public suffix", "usage site with a numeric last label",
 		"usage site with a numeric first label", "usage site as a hex number", "trial row with padded octets",
+		"hit with an egress link", "trial row with an egress link", "same hit through two links is two rows",
+		"same hit with and without egress is two rows", "duplicate hit key with the same egress",
+		"egress that is not a link key", "egress with a zero row id", "egress that is a forward key",
 	} {
 		if !have[name] {
 			t.Errorf("no vector named %q", name)

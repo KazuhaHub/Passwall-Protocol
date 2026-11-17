@@ -630,6 +630,47 @@ func TestDigest_AsIsUnchanged(t *testing.T) {
 	}
 }
 
+// AuditEgress false is the absence of the field, so every digest minted before
+// it existed is still the digest of the same policy.
+func TestDigest_AuditEgressFalseUnchanged(t *testing.T) {
+	p := validPolicy()
+	if strings.Contains(string(mustMarshal(t, p)), "audit_egress") {
+		t.Fatalf("false is encoded: %s", mustMarshal(t, p))
+	}
+	// Pinned before the field was added (the same policy as TestDigest_AsIsUnchanged).
+	const want = "8981e141555807a9d8e9487203e52cb00120dfa0bc8f6220193e8d86e2a2b3b5"
+	if got := PolicyDigest(p); got != want {
+		t.Fatalf("digest of the v0.7 policy = %s, want %s", got, want)
+	}
+	p.AuditEgress = true
+	if got := PolicyDigest(p); got == want {
+		t.Fatal("digest ignores audit_egress")
+	}
+	if !strings.Contains(string(mustMarshal(t, p)), `"audit_egress":true`) {
+		t.Fatalf("true is not encoded: %s", mustMarshal(t, p))
+	}
+	var decoded DestinationPolicy
+	if err := json.Unmarshal(mustMarshal(t, p), &decoded); err != nil || !decoded.AuditEgress {
+		t.Fatalf("round trip: %+v %v", decoded, err)
+	}
+}
+
+// The flag only means something when hits are recorded.
+func TestValidate_AuditEgressNeedsCollect(t *testing.T) {
+	p := validPolicy()
+	p.AuditEgress = true
+	p.Collect = CollectOff
+	if err := ValidateDestinationPolicy(p); err == nil {
+		t.Fatal("audit_egress without collect accepted")
+	}
+	for _, level := range []CollectLevel{CollectHits, CollectHitsAndUsage} {
+		p.Collect = level
+		if err := ValidateDestinationPolicy(p); err != nil {
+			t.Fatalf("collect %q: %v", level, err)
+		}
+	}
+}
+
 func TestCapabilityDestinationResolveIsNotAnUpgradeCapability(t *testing.T) {
 	if CapabilityDestinationResolve != "policy.destination.resolve.v1" {
 		t.Fatalf("capability = %q", CapabilityDestinationResolve)

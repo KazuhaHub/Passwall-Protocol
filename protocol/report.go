@@ -148,8 +148,10 @@ type NodeReport struct {
 	// report, never "nothing happened": a node that is not recording looks the
 	// same, and the panel does not read the absence as either. A batch from an
 	// agent that did not advertise CapabilityAuditHits (or, for its usage rows,
-	// CapabilityAuditUsage) is a producer bug, which ValidateNodeReport refuses
-	// on the sender's side.
+	// CapabilityAuditUsage, and for a hit's egress, CapabilityAuditHitsEgress) is
+	// a producer bug, which ValidateNodeReport refuses on the sender's side. A
+	// panel that validates the observation alone checks those capabilities
+	// itself.
 	//
 	// Not part of ValidateNodeReportBase and not durable; see AuditObservation.
 	Audit *AuditObservation `json:"audit,omitempty"`

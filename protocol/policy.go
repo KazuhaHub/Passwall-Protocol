@@ -125,6 +125,13 @@ type DestinationPolicy struct {
 	// omitted from the encoding. Send a non-AsIs value only to an agent that
 	// declared CapabilityDestinationResolve.
 	Resolve ResolveMode `json:"resolve,omitempty"`
+	// AuditEgress asks the agent to give every hit it records its egress
+	// (AuditHit.Egress). PSP sets it only for an agent that declared
+	// CapabilityAuditHitsEgress, runs the Xray engine and has egress bindings,
+	// so an agent that cannot honour it never receives it. False is the absence
+	// of the field, so the digest of every policy that does not ask for it is
+	// unchanged.
+	AuditEgress bool `json:"audit_egress,omitempty"`
 }
 
 // DestinationRule is one rule. Fields are ANDed; within a group that has
@@ -290,6 +297,12 @@ func ValidateDestinationPolicy(policy *DestinationPolicy) error {
 	case CollectOff, CollectHits, CollectHitsAndUsage:
 	default:
 		return fmt.Errorf("collect %q is not one of off, hits, hits_and_usage", policy.Collect)
+	}
+	// Egress is a property of recorded hits; with nothing recorded the flag
+	// would only change the digest, and the agent would re-apply an
+	// equivalent policy.
+	if policy.AuditEgress && policy.Collect == CollectOff {
+		return fmt.Errorf("audit_egress needs collect to be hits or hits_and_usage")
 	}
 	switch policy.Resolve {
 	case ResolveAsIs, ResolveOnDemand:

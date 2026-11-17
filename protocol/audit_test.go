@@ -51,13 +51,13 @@ func auditReport(partial bool, capabilities []string) NodeReport {
 var bothAuditCapabilities = []string{CapabilityAuditHits, CapabilityAuditUsage}
 
 func TestAuditCapabilitiesAreNotUpgradeCapabilities(t *testing.T) {
-	if CapabilityAuditHits != "audit.hits.v1" || CapabilityAuditUsage != "audit.usage.v1" {
-		t.Fatalf("capability names changed: %q %q", CapabilityAuditHits, CapabilityAuditUsage)
+	if CapabilityAuditHits != "audit.hits.v1" || CapabilityAuditUsage != "audit.usage.v1" || CapabilityAuditHitsEgress != "audit.hits.egress.v1" {
+		t.Fatalf("capability names changed: %q %q %q", CapabilityAuditHits, CapabilityAuditUsage, CapabilityAuditHitsEgress)
 	}
 	// Like host telemetry and the destination policy, lacking them says nothing
 	// about whether the agent can take an upgrade.
 	for _, upgrade := range AgentUpgradeCapabilities() {
-		if upgrade == CapabilityAuditHits || upgrade == CapabilityAuditUsage {
+		if upgrade == CapabilityAuditHits || upgrade == CapabilityAuditUsage || upgrade == CapabilityAuditHitsEgress {
 			t.Fatalf("%s is an upgrade capability", upgrade)
 		}
 	}
@@ -631,6 +631,7 @@ func TestAuditErrorsDoNotQuoteTheRejectedValue(t *testing.T) {
 		"trial dest":     func(o *AuditObservation) { o.Hits[4].Dest = "203.0.113.55" },
 		"trial dest bad": func(o *AuditObservation) { o.Hits[4].Dest = marker + ".Example" },
 		"batch id":       func(o *AuditObservation) { o.BatchID = marker },
+		"hit egress":     func(o *AuditObservation) { o.Hits[0].Egress = LinkKey("lnk_" + marker) },
 	}
 	for name, mutate := range cases {
 		observation := auditObservation()
@@ -645,5 +646,67 @@ func TestAuditErrorsDoNotQuoteTheRejectedValue(t *testing.T) {
 				t.Errorf("%s: error repeats the value (%q): %v", name, leaked, err)
 			}
 		}
+	}
+}
+
+// A hit without Egress is what every agent wrote before the field existed, and
+// it must keep encoding to exactly those bytes.
+func TestAuditHitWithoutEgressIsByteIdentical(t *testing.T) {
+	hit := AuditHit{Hour: auditHour, RuleID: "p12x2", Action: AuditActionBlock, Subject: "usr_7", Dest: "tracker.example", Port: 6881, Count: 3, FirstMS: auditHour + 10, LastMS: auditHour + 900}
+	const want = `{"hour":1699999200000,"rule_id":"p12x2","action":"block","subject":"usr_7","dest":"tracker.example","port":6881,"count":3,"first_ms":1699999200010,"last_ms":1699999200900}`
+	if got := string(mustMarshal(t, hit)); got != want {
+		t.Fatalf("hit without egress changed on the wire:\n got=%s\nwant=%s", got, want)
+	}
+	hit.Egress = NewLinkKey(4)
+	if got, want := string(mustMarshal(t, hit)), want[:len(want)-1]+`,"egress":"lnk_4"}`; got != want {
+		t.Fatalf("hit with egress:\n got=%s\nwant=%s", got, want)
+	}
+}
+
+func TestAuditEgressInTheHitKey(t *testing.T) {
+	base := auditObservation().Hits[0]
+	through := func(egress LinkKey) AuditHit {
+		hit := base
+		hit.Egress = egress
+		return hit
+	}
+	observation := func(hits ...AuditHit) AuditObservation {
+		return AuditObservation{BatchID: auditBatchID, Hits: hits}
+	}
+	for name, hits := range map[string][]AuditHit{
+		"two links":       {through("lnk_4"), through("lnk_5")},
+		"link and server": {through(""), through("lnk_4")},
+	} {
+		if err := ValidateAuditObservation(observation(hits...)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := ValidateAuditObservation(observation(through("lnk_4"), through("lnk_4"))); err == nil {
+		t.Error("an exact duplicate with egress was accepted")
+	}
+	if err := ValidateAuditObservation(observation(through(""), through(""))); err == nil {
+		t.Error("an exact duplicate without egress was accepted")
+	}
+	for _, egress := range []LinkKey{"lnk_0", "lnk_x", "lnk_", "fwd_1", "usr_1", "4"} {
+		if err := ValidateAuditHit(through(egress)); err == nil {
+			t.Errorf("egress %q was accepted", egress)
+		}
+	}
+	if err := ValidateAuditHit(through("lnk_4")); err != nil {
+		t.Errorf("valid egress: %v", err)
+	}
+}
+
+func TestAuditEgressNeedsItsCapability(t *testing.T) {
+	report := func(capabilities []string) NodeReport {
+		r := auditReport(false, capabilities)
+		r.Audit.Hits[0].Egress = "lnk_4"
+		return r
+	}
+	if err := ValidateNodeReport(report(bothAuditCapabilities)); err == nil {
+		t.Error("egress without audit.hits.egress.v1 was accepted")
+	}
+	if err := ValidateNodeReport(report(append([]string{CapabilityAuditHitsEgress}, bothAuditCapabilities...))); err != nil {
+		t.Errorf("egress with its capability: %v", err)
 	}
 }

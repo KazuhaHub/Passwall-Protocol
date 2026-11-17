@@ -18,12 +18,19 @@ import (
 // tier of recording and presupposes the first, so an observation that carries
 // usage rows needs BOTH capabilities (ValidateNodeReport).
 //
-// NEITHER IS AN UPGRADE CAPABILITY. Like CapabilityDestinationPolicy and
+// CapabilityAuditHitsEgress says the agent can give a hit the link the
+// connection left through (AuditHit.Egress). It is a capability of its own and
+// not a version of audit.hits.v1 because it needs the node to know its egress
+// bindings, which an agent that records hits does not necessarily have; and it
+// presupposes CapabilityAuditHits, as usage does.
+//
+// NONE OF THEM IS AN UPGRADE CAPABILITY. Like CapabilityDestinationPolicy and
 // CapabilityHostTelemetry they are absent from AgentUpgradeCapabilities, so an
 // agent that lacks them is not held back from upgrading.
 const (
-	CapabilityAuditHits  = "audit.hits.v1"
-	CapabilityAuditUsage = "audit.usage.v1"
+	CapabilityAuditHits       = "audit.hits.v1"
+	CapabilityAuditUsage      = "audit.usage.v1"
+	CapabilityAuditHitsEgress = "audit.hits.egress.v1"
 )
 
 const (
@@ -131,6 +138,14 @@ type AuditHit struct {
 	Count   uint32 `json:"count"`
 	FirstMS int64  `json:"first_ms"`
 	LastMS  int64  `json:"last_ms"`
+	// Egress is the link the connection left through, or, for a block, the one
+	// it would have left through. Empty means it left from the server itself,
+	// which is also what an agent that does not report egress looks like, so a
+	// reader tells the two apart by the capability and the policy's AuditEgress,
+	// not by this field. It is part of the aggregation key: the same rule and
+	// destination through two links are two rows. Omitted when empty, so a row
+	// without it is byte-identical to one from before the field existed.
+	Egress LinkKey `json:"egress,omitempty"`
 }
 
 // AuditUsage is how many connections one person made to one site in one hour.
@@ -188,6 +203,7 @@ func ValidateAuditObservation(observation AuditObservation) error {
 		subject SubjectKey
 		dest    string
 		port    uint16
+		egress  LinkKey
 	}
 	seenHits := make(map[hitKey]struct{}, len(observation.Hits))
 	for index, hit := range observation.Hits {
@@ -196,7 +212,9 @@ func ValidateAuditObservation(observation AuditObservation) error {
 		}
 		// Action is part of the key: a rule whose action changed within the hour
 		// legitimately has two rows, and the hour's count for each is separate.
-		key := hitKey{hit.Hour, hit.RuleID, hit.Action, hit.Subject, hit.Dest, hit.Port}
+		// Egress is part of it too: the same rule and destination reached through
+		// two links within the hour are two rows, one per link.
+		key := hitKey{hit.Hour, hit.RuleID, hit.Action, hit.Subject, hit.Dest, hit.Port, hit.Egress}
 		if _, exists := seenHits[key]; exists {
 			return fmt.Errorf("audit hit %d repeats the aggregation key of an earlier hit", index)
 		}
@@ -276,9 +294,16 @@ func ValidateAuditHit(hit AuditHit) error {
 		}
 	}
 
+	if hit.Egress != "" {
+		if _, err := hit.Egress.RowID(); err != nil {
+			return fmt.Errorf("egress is not a link key")
+		}
+	}
+
 	if isAuditTrialRow(hit) {
 		// The fold that keeps per-person, per-host data on the node: none of what
-		// would identify a person or a connection may be present.
+		// would identify a person or a connection may be present. An egress may:
+		// a link names two servers, not a person.
 		if hit.Subject != "" {
 			return fmt.Errorf("a trial row carries no subject")
 		}
