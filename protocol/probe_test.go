@@ -210,3 +210,16 @@ func TestQUICProbeNeedsAForwardWithUDP(t *testing.T) {
 		t.Fatalf("a tcp probe rejected: %v", err)
 	}
 }
+
+func TestProbeLinkURLPortBounds(t *testing.T) {
+	for _, u := range []string{"https://example.com", "https://example.com:1", "http://[2001:db8::1]:65535/status"} {
+		if err := validateProbeLinkURL(u); err != nil {
+			t.Errorf("valid probe URL %q: %v", u, err)
+		}
+	}
+	for _, u := range []string{"https://example.com:", "https://example.com:0", "http://[2001:db8::1]:65536"} {
+		if err := validateProbeLinkURL(u); err == nil {
+			t.Errorf("accepted probe URL with an invalid port: %q", u)
+		}
+	}
+}

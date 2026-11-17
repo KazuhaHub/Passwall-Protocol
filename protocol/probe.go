@@ -3,6 +3,8 @@ package protocol
 import (
 	"fmt"
 	"net/url"
+	"strconv"
+	"strings"
 )
 
 // CapabilityTransitProbe says the agent runs the link and forward self-test
@@ -241,6 +243,12 @@ func validateProbeLinkURL(raw string) error {
 	}
 	if parsed.Host == "" || parsed.Hostname() == "" {
 		return fmt.Errorf("has no host")
+	}
+	if port := parsed.Port(); port != "" || strings.HasSuffix(parsed.Host, ":") {
+		value, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || value == 0 {
+			return fmt.Errorf("port must be between 1 and 65535")
+		}
 	}
 	if parsed.User != nil {
 		return fmt.Errorf("carries credentials")
