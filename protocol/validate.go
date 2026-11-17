@@ -51,7 +51,8 @@ func ValidateNodeReportBase(report NodeReport) error {
 	if report.Partial {
 		if len(report.Objects) != 0 || len(report.ListenerCounters) != 0 ||
 			len(report.Clients) != 0 || len(report.Subjects) != 0 ||
-			len(report.ForwardCounters) != 0 || len(report.LinkCounters) != 0 {
+			len(report.ForwardCounters) != 0 || len(report.LinkCounters) != 0 ||
+			len(report.Probes) != 0 {
 			return fmt.Errorf("partial report must omit full enumerations")
 		}
 		return validateOutbox(report)
@@ -112,6 +113,9 @@ func ValidateNodeReportBase(report NodeReport) error {
 			return fmt.Errorf("duplicate link counter %q", counter.Key)
 		}
 		seenLinks[counter.Key] = struct{}{}
+	}
+	if err := ValidateProbeResults(report.Probes); err != nil {
+		return err
 	}
 	seenClients := make(map[ClientKey]struct{}, len(report.Clients))
 	for _, counter := range report.Clients {
@@ -210,6 +214,9 @@ func ValidateNodeReport(report NodeReport) error {
 	}
 	if len(report.LinkCounters) > 0 && !hasCapability(report.Capabilities, CapabilityTransitLink) {
 		return fmt.Errorf("link counters without %s capability", CapabilityTransitLink)
+	}
+	if len(report.Probes) > 0 && !hasCapability(report.Capabilities, CapabilityTransitProbe) {
+		return fmt.Errorf("probes without %s capability", CapabilityTransitProbe)
 	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is

@@ -206,7 +206,8 @@ without one is byte-identical to v0.3.0.
   (`lnk_<id>`) the connection left through, or would have left through for a
   block. Empty or absent means it left from the server itself. PSP asks for it
   with `DestinationPolicy.AuditEgress` (`audit_egress`), set only for an agent
-  that declared the capability, runs Xray and has egress bindings. `egress` is
+  that declared the capability, runs Xray and has egress bindings or routes
+  through links (its hits can leave through a link). `egress` is
   part of the hit's aggregation key, so the same rule and destination through two
   links are two rows. Both fields are omitted when empty or false: a hit without
   egress and the digest of a policy without the flag are byte-identical to
@@ -276,6 +277,103 @@ know the fields would serve the bound listeners from its own address.
 
 Multi-hop chains are a later addition to `Transit`, behind a capability of their
 own.
+
+## Link probes (v0.9.0)
+
+`Transit.Probe` asks an agent to self-test the lines it is the entry of, and
+`NodeReport.Probes` carries what it measured. It is gated by
+`transit.probe.v1` (not an upgrade capability), and the gate is mandatory: an
+agent that does not know the field would leave the panel showing "never probed"
+for a line nobody is measuring. An agent that did not declare it must not send
+`Probes`; `ValidateNodeReport` refuses them.
+
+- **What is probed.** The links probed are exactly `Transit.LinksOut`: the entry
+  is the side that dials the exit, and there is no separate list to disagree
+  with. Forwards are opt-in through `ProbeSettings.Forwards`, each with a method
+  (`tcp` or `quic`) and each present in the same `Transit.Forwards`.
+- **Settings.** `interval_seconds` 30..3600, `timeout_ms` 500..10000. `link_url`
+  is an absolute `http` or `https` URL without credentials, at most 512 bytes;
+  empty means links are probed transport-only and no `e2e` result exists.
+  Settings with no `LinksOut` and no forward are refused, so the panel never
+  sends a block that means nothing.
+- **Results.** One `ProbeResult` per (key, kind): `e2e` and `transport` for a
+  link (`lnk_`), `forward` for a forward (`fwd_`). `failures` is within
+  `0..attempts`, `attempts` at most 1000, RTTs are ordered and all zero when no
+  attempt succeeded, and `last_error` is one of `timeout`, `refused`, `tls`,
+  `http_status`, `dns`, `probe_unavailable`, `other`.
+- **Full reports only.** Like the counters, `Probes` is absent from a partial
+  report, and a partial report that carries them is refused. Without `Probe` and
+  `Probes` the encodings are byte-identical to v0.8.x.
+
+## Routing by destination (v0.9.0)
+
+`Transit.Routes` lets one listener leave through different exits depending on
+where the connection is going: streaming through one link, mail from the server
+itself, the rest through the listener's egress binding. It is gated by
+`transit.route.v1` (not an upgrade capability), and the gate is mandatory: an
+agent that does not know the field sends everything through the default exit,
+so a user would be served from the wrong country with no error anywhere. The
+same gate covers `DestinationRule.Exits`. Without `Routes` and `Exits` the
+encodings are byte-identical to before.
+
+- **Routes.** `ListenerRoutes{listener, rules}`, one entry per listener, at most
+  64 rules per listener and 1024 in all. A `RouteRule` has an id `r<n>` (n >= 1,
+  unique per listener), matchers (`domains`, `cidrs`, `ports`, `network`, with
+  the meaning they have in a policy rule) and an `exit`. The first matching rule
+  decides; a connection no rule matches leaves through the listener's default
+  exit, which is its `EgressBinding` if it has one and the agent itself
+  otherwise. A rule must match on something. `MatchRoute(transit, listener,
+  input, resolve)` is the reference model and returns `(exit, known)`: input a
+  rule depends on and leaves unknown (a port, a network, a target) makes that
+  rule untestable, and then `known` is false and `exit` is only a guess.
+  `MatchRouted` leaves the exit unknown in that case, so a policy rule with
+  `Exits` comes back untestable and the result conditional, never a confident
+  verdict on a guess. Under `resolve: on_demand` the router resolves a hostname
+  for a rule's CIDRs, so a hostname meets them through `MatchInput.Resolved`
+  (nil: untestable); under as-is a hostname never matches CIDRs. A trailing dot
+  is not normalised.
+- **Exits.** `exit` is `local` (`LocalExit`) or a key of the same
+  `Transit.LinksOut`. `local` is a `LinkKey` in type only: `LinkKey.RowID`
+  rejects it, so it is valid nowhere but `RouteRule.Exit` and
+  `DestinationRule.Exits`, and a link, an egress binding, an audit hit or a
+  probe result can never carry it.
+- **Domains.** `domain:`, `full:` and `keyword:`. A `regexp:` is refused, so that
+  every route rule can be intersected with a policy rule exactly.
+- **Policy rules by exit.** `DestinationRule.Exits` is a sorted, duplicate-free
+  list of `local` and `lnk_` keys (sorted as text, so `lnk_10` precedes `lnk_3`).
+  Empty applies whatever the exit; otherwise the rule applies only to traffic
+  whose chosen exit is in the set. It is a scope like `Inbounds`, not a matcher,
+  and a source rule carries none. `MatchInput.Exit` carries the exit into
+  `MatchDestination` (unknown makes such a rule untestable), and `MatchRouted`
+  fills it from the transit. Whether a link is one of the agent's is the
+  Transit's question; the policy validator checks the form only.
+- **Compile contract.** The exit is the first matching route rule, else the
+  default. A consumer applying the policy per exit must emit, for each routed
+  listener and in route order, segment k = every policy rule whose `exits` allows
+  exit k (empty allows all), each ANDed with route rule k, followed by a
+  catch-all on route rule k to exit k; then the default segment. Earlier
+  segments consume the traffic of earlier route rules, and the result is
+  correct because of that ordering: the `exact` of `IntersectDestinations`
+  applies to one (policy rule, route rule) pair only and does not exclude
+  earlier route rules by itself.
+- **Intersection.** `IntersectDestinations(a, b)` is the conjunction of two
+  `DestinationMatcher`s, which is how the Xray compiler applies a policy rule to
+  the traffic one route rule sends out one exit. When `exact` is true the
+  result matches precisely what both match; it is fuzz-tested against the
+  reference matcher. When it is false the result is an over-approximation: it
+  matches everything both match and possibly more, never less. That is safe for
+  a block and wrong for an allow, so a caller that cannot over-match must refuse
+  an inexact result. Inexact pairs: a `regexp:` against a domain, keyword or
+  regexp; two keywords neither of which contains the other; and, under
+  `on_demand`, a hostname entry against an address matcher (a hostname that
+  merely resolves into the CIDRs matches) or two address matchers. A `full:` is
+  exact against everything, a keyword against a domain is exact (as a `regexp:`
+  entry when the domain does not hold the keyword, which a caller bounding
+  regexps must count) unless the domain or keyword is not ASCII or the
+  generated regexp exceeds 1024 bytes, in which case it is inexact, and a
+  result that matches nothing is `Never`, exact. An inexact result is a
+  superset: safe for a block, and it must never be used for an allow or an
+  observe rule.
 
 ## Development
 

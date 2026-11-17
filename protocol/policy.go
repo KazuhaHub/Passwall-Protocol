@@ -127,10 +127,10 @@ type DestinationPolicy struct {
 	Resolve ResolveMode `json:"resolve,omitempty"`
 	// AuditEgress asks the agent to give every hit it records its egress
 	// (AuditHit.Egress). PSP sets it only for an agent that declared
-	// CapabilityAuditHitsEgress, runs the Xray engine and has egress bindings,
-	// so an agent that cannot honour it never receives it. False is the absence
-	// of the field, so the digest of every policy that does not ask for it is
-	// unchanged.
+	// CapabilityAuditHitsEgress, runs the Xray engine and has egress bindings
+	// or routes through links, so an agent that cannot honour it never
+	// receives it. False is the absence of the field, so the digest of every
+	// policy that does not ask for it is unchanged.
 	AuditEgress bool `json:"audit_egress,omitempty"`
 }
 
@@ -139,11 +139,24 @@ type DestinationPolicy struct {
 type DestinationRule struct {
 	// ID is p<id>[x<k>], g<gid>[x<k>] or s<n>; see rulePhase for what the
 	// prefix means for evaluation order.
-	ID          string        `json:"id"`
-	Action      RuleAction    `json:"action"`
-	Subjects    []SubjectKey  `json:"subjects,omitempty"` // empty = everyone
-	Inbounds    []ListenerKey `json:"inbounds,omitempty"` // empty = every inbound
-	SourceCIDRs []string      `json:"source_cidrs,omitempty"`
+	ID       string        `json:"id"`
+	Action   RuleAction    `json:"action"`
+	Subjects []SubjectKey  `json:"subjects,omitempty"` // empty = everyone
+	Inbounds []ListenerKey `json:"inbounds,omitempty"` // empty = every inbound
+	// Exits scopes the rule to traffic that leaves through one of these exits:
+	// LocalExit or a link of the agent's Transit.LinksOut. Empty applies
+	// whatever the exit, so a policy that names none keeps the digest it always
+	// had. The exit is the one Transit.Routes picks for the connection: the
+	// first matching route rule, else the listener's default exit (see
+	// MatchRoute), and the rule is judged on it like on Inbounds. A compiler
+	// honours it with the per-route-rule segments described on RouteRule: a
+	// policy rule is emitted only inside the segments of the exits it allows,
+	// ANDed with that route rule's matcher (IntersectDestinations). Send it only
+	// to an agent that declared CapabilityTransitRoute. It is ANDed with the
+	// other fields and is not a matcher: a rule with nothing but Exits still
+	// matches on nothing and must be catch_all.
+	Exits       []LinkKey `json:"exits,omitempty"`
+	SourceCIDRs []string  `json:"source_cidrs,omitempty"`
 	// Domains entries carry a prefix: domain:, full:, keyword: or regexp:.
 	//
 	// DOMAINS, CIDRS AND PRIVATE ARE ALTERNATIVES: a rule matches when the
@@ -479,7 +492,7 @@ func validateRule(rule DestinationRule) error {
 		if len(rule.SourceCIDRs) == 0 {
 			return fmt.Errorf("a source rule needs source_cidrs")
 		}
-		if hasMatch || len(rule.Subjects) > 0 || rule.CatchAll {
+		if hasMatch || len(rule.Subjects) > 0 || rule.CatchAll || len(rule.Exits) > 0 {
 			return fmt.Errorf("a source rule carries source_cidrs and optional inbounds only")
 		}
 	case 'g':
@@ -534,6 +547,9 @@ func validateRule(rule DestinationRule) error {
 	if err := validateKeys("inbounds", rule.Inbounds, ListenerKey.RowID); err != nil {
 		return err
 	}
+	if err := validateExits(rule.Exits); err != nil {
+		return err
+	}
 	if err := validateCIDRList("source_cidrs", rule.SourceCIDRs); err != nil {
 		return err
 	}
@@ -573,6 +589,27 @@ func validateRule(rule DestinationRule) error {
 	// the AND reading from being written by accident.
 	if len(rule.Protocols) > 0 && len(rule.Domains) > 0 {
 		return fmt.Errorf("protocols and domains cannot share a rule")
+	}
+	return nil
+}
+
+// validateExits: canonical sorted unique, each LocalExit or a link key. Whether
+// a link is one of the agent's is the Transit's question; the policy does not
+// see it.
+func validateExits(exits []LinkKey) error {
+	if len(exits) > MaxLinks+1 {
+		return fmt.Errorf("exits has %d entries, maximum is %d", len(exits), MaxLinks+1)
+	}
+	if err := validateSortedUnique("exits", exits); err != nil {
+		return err
+	}
+	for _, exit := range exits {
+		if exit == LocalExit {
+			continue
+		}
+		if _, err := exit.RowID(); err != nil {
+			return fmt.Errorf("exits: %w", err)
+		}
 	}
 	return nil
 }

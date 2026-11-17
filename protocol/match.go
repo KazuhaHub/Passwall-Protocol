@@ -3,6 +3,7 @@ package protocol
 import (
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -58,10 +59,13 @@ var privatePrefixes = sync.OnceValue(func() []netip.Prefix {
 type MatchInput struct {
 	Subject SubjectKey  // "" = not exempt, in no group
 	Inbound ListenerKey // "" = unknown inbound: rules with Inbounds are untestable
-	Source  string      // client IP; "" = unknown: SourceCIDRs rules are untestable
-	Target  string      // hostname or IP literal
-	Port    uint16      // 0 = unknown: rules with Ports are untestable
-	Network string      // "tcp" | "udp" | "" (unknown)
+	// Exit is where the connection leaves: LocalExit or a link. "" = unknown:
+	// rules with Exits are untestable. MatchRouted fills it from the Transit.
+	Exit    LinkKey
+	Source  string // client IP; "" = unknown: SourceCIDRs rules are untestable
+	Target  string // hostname or IP literal
+	Port    uint16 // 0 = unknown: rules with Ports are untestable
+	Network string // "tcp" | "udp" | "" (unknown)
 	// Resolved: on_demand only: nil = not given (IP rules on a hostname
 	// untestable); non-nil empty = lookup failed; non-IP entries ignored.
 	//
@@ -433,6 +437,13 @@ func matchRule(rule DestinationRule, in MatchInput, target matchTarget, res reso
 		if in.Inbound == "" {
 			untestable = true
 		} else if !containsListener(rule.Inbounds, in.Inbound) {
+			return StepMiss, "", ipNote
+		}
+	}
+	if len(rule.Exits) > 0 {
+		if in.Exit == "" {
+			untestable = true
+		} else if !slices.Contains(rule.Exits, in.Exit) {
 			return StepMiss, "", ipNote
 		}
 	}

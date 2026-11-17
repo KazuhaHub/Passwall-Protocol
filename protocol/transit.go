@@ -70,6 +70,14 @@ type Transit struct {
 	// Egress names which of this agent's listeners leave through which of its
 	// LinksOut. A listener without a binding leaves from this agent itself.
 	Egress []EgressBinding `json:"egress,omitempty"`
+	// Probe asks the agent to self-test its outgoing links and some forwards,
+	// gated by CapabilityTransitProbe (see probe.go). Nil sends nothing, so a
+	// server that is not probed keeps the config it had before probing existed.
+	Probe *ProbeSettings `json:"probe,omitempty"`
+	// Routes pick a listener's exit by destination, gated by
+	// CapabilityTransitRoute (see route.go). Empty sends nothing, so a server
+	// that routes by nothing keeps the config it had before routes existed.
+	Routes []ListenerRoutes `json:"routes,omitempty"`
 }
 
 // Forward relays every connection arriving on Port to Target:TargetPort
@@ -127,7 +135,13 @@ func ValidateTransit(transit *Transit) error {
 		}
 		seen[forward.Key] = struct{}{}
 	}
-	return validateLinks(transit)
+	if err := validateLinks(transit); err != nil {
+		return err
+	}
+	if err := validateRoutes(transit); err != nil {
+		return err
+	}
+	return validateProbeSettings(transit)
 }
 
 // ValidateForward checks one forward.

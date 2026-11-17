@@ -569,4 +569,27 @@ var DestinationMatchVectors = []DestinationMatchVector{
 		Input: protocol.MatchInput{Target: "a.example", Resolved: []string{"10.1.1.1"}}, Verdict: "default",
 		Notes: []protocol.MatchNote{protocol.NoteHostnameSkipsIPRules},
 		Steps: []protocol.MatchStep{step("p1", "miss")}},
+
+	// --- exits ---------------------------------------------------------------
+	// A rule with Exits applies only to traffic whose exit is in the set; a rule
+	// without it applies whatever the exit. An unknown exit cannot be judged.
+	{Name: "exits: the exit is in the set", Policy: policyOf(blockCIDR10Exits),
+		Input: protocol.MatchInput{Target: "10.1.1.1", Exit: "lnk_4"}, Verdict: "block", Terminated: "p1"},
+	{Name: "exits: local is in the set", Policy: policyOf(blockCIDR10Exits),
+		Input: protocol.MatchInput{Target: "10.1.1.1", Exit: protocol.LocalExit}, Verdict: "block", Terminated: "p1"},
+	{Name: "exits: the exit is outside the set", Policy: policyOf(blockCIDR10Exits),
+		Input: protocol.MatchInput{Target: "10.1.1.1", Exit: "lnk_3"}, Verdict: "default",
+		Steps: []protocol.MatchStep{step("p1", "miss")}},
+	{Name: "exits: an unknown exit is untestable", Policy: policyOf(blockCIDR10Exits),
+		Input: protocol.MatchInput{Target: "10.1.1.1"}, Verdict: "default", Conditional: true,
+		Steps: []protocol.MatchStep{step("p1", "untestable")}},
+	{Name: "exits: a definite miss beats an unknown exit", Policy: policyOf(blockCIDR10Exits),
+		Input: protocol.MatchInput{Target: "8.8.8.8"}, Verdict: "default",
+		Steps: []protocol.MatchStep{step("p1", "miss")}},
+	{Name: "exits: a rule without exits ignores the exit", Policy: policyOf(blockCIDR10),
+		Input: protocol.MatchInput{Target: "10.1.1.1", Exit: "lnk_9"}, Verdict: "block", Terminated: "p1"},
+	{Name: "exits: the rule outside the set lets the next one decide", Policy: policyOf(blockCIDR10Exits, protocol.DestinationRule{ID: "p2", Action: protocol.RuleObserve, CIDRs: []string{"10.0.0.0/8"}}),
+		Input: protocol.MatchInput{Target: "10.1.1.1", Exit: "lnk_3"}, Verdict: "observe", Terminated: "p2"},
 }
+
+var blockCIDR10Exits = protocol.DestinationRule{ID: "p1", Action: protocol.RuleBlock, CIDRs: []string{"10.0.0.0/8"}, Exits: []protocol.LinkKey{"lnk_4", protocol.LocalExit}}
