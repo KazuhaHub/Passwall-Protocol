@@ -78,6 +78,11 @@ type Transit struct {
 	// CapabilityTransitRoute (see route.go). Empty sends nothing, so a server
 	// that routes by nothing keeps the config it had before routes existed.
 	Routes []ListenerRoutes `json:"routes,omitempty"`
+	// Fronts share one TCP port among several TLS or REALITY uses by routing on
+	// the SNI, gated by CapabilityTransitSNI (see front.go). Empty sends
+	// nothing, so a server that shares no port keeps the config it had before
+	// fronts existed.
+	Fronts []Front `json:"fronts,omitempty"`
 }
 
 // Forward relays every connection arriving on Port to Target:TargetPort
@@ -139,6 +144,9 @@ func ValidateTransit(transit *Transit) error {
 		return err
 	}
 	if err := validateRoutes(transit); err != nil {
+		return err
+	}
+	if err := validateFronts(transit); err != nil {
 		return err
 	}
 	return validateProbeSettings(transit)

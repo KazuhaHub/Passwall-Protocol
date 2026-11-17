@@ -375,6 +375,138 @@ encodings are byte-identical to before.
   superset: safe for a block, and it must never be used for an allow or an
   observe rule.
 
+## SNI fronts (v0.9.0)
+
+`Transit.Fronts` lets several TLS or REALITY uses share one TCP port, normally
+443: the agent binds the port itself and routes each raw connection by the SNI of
+its ClientHello, without decrypting anything. It is gated by `transit.sni.v1`
+(not an upgrade capability), and the gate is mandatory: an agent that does not
+know the field would never bind the port where users reach the listeners that
+were moved off it, so every node on a shared 443 would go dark while the config
+reads as applied. Without `Fronts` the encoding is byte-identical to before.
+
+- **Keys and states.** A front is keyed by `FrontKey` (`fnt_<id>`), a type of its
+  own, and reports the usual four config-object states under that key. Fronts are
+  not listeners: they are not in `Coverage` and no client attaches to them.
+- **Shape.** `Front{key, listen, port, listeners, routes, default}`. At most 16
+  fronts, 256 routes per front, 1..16 server names per route. Names are sorted,
+  lowercase, exact (no wildcard or suffix match), pass the same server-name check
+  a REALITY link does, and appear in at most one route of a front. A front needs
+  at least one route and a `default`, which takes every connection no route names,
+  SNI absent included.
+- **Targets.** A `FrontTarget` names exactly one of `listener`, `forward`, `link`
+  or `external`.
+  - *Listener.* A listener keeps its public port in its own config; the front
+    lists it in `listeners` with a `loopback_port`, and the agent binds it to
+    `127.0.0.1:<loopback_port>` instead. Every fronted listener must be the
+    target of a route or the default, and loopback ports are 1..65535 and unique
+    across the whole transit. A loopback port must also not be the port of any
+    front, forward or incoming link whose bind includes 127.0.0.1's side of the
+    host: an empty `listen`, `0.0.0.0`, `::`, or any address in `127.0.0.0/8`
+    (`::1` is another socket and is not counted). **Not checked here:** the
+    listener's public port lives in its own config, which `ValidateTransit`
+    cannot see. It must equal `Front.Port`, and the listener must be a TCP
+    TLS or REALITY listener; the panel and the agent check this.
+  - *Forward.* A `Transit.Forwards` entry with network `tcp` and the same `listen`
+    and `port` as the front: the front owns the socket, and the forward says where
+    it lives so the two descriptions cannot disagree.
+  - *Link.* A `vless_reality` `Transit.LinksIn` entry with the same `listen` and
+    `port`. Routes to a link name only server names the link accepts
+    (`reality.server_names`), no route may send one of the link's names to another
+    target, and unless the link is also the default every one of its names must be
+    routed to it: a REALITY client reaches the link by its own server name.
+  - *External.* `{host, port}` and only as `default`: a real website that unknown
+    or absent SNIs are relayed to, so a scanner sees an ordinary site. The host is
+    a canonical IP or a lowercase DNS name, as for a forward. A host that means
+    this machine is refused whatever the port: loopback, the unspecified address,
+    all of `0.0.0.0/8`, `localhost` and `*.localhost`. So is a host:port that is a
+    bind of this transit: a front's, a forward's or an incoming link's `listen`
+    address on its port, mapped spellings included (a forward on
+    `203.0.113.5:8443` relaying to `203.0.113.5:443`, behind a front there, is a
+    loop of two sockets). A wildcard bind cannot be matched against a named host.
+    **Not detectable here:** with an empty `listen`, the host's own public
+    address on a bound port would loop back; the agent and the panel must check
+    it.
+- **One front each.** A listener, forward or link is behind at most one front
+  (it may be both a route target and the default of that front). Two fronts must
+  not share a bind: the same address and port, or one with an empty `listen` (every
+  address) over a specific one on the same port. A forward or incoming link whose
+  bind overlaps a front's is refused unless it is that front's target. An
+  IPv4-mapped IPv6 address is compared as the IPv4 address it maps. `0.0.0.0` overlaps every IPv4
+  address and `::` is taken as dual-stack and overlaps all, as on Linux.
+- **Probe.** `ProbeMethodTLS` (`"tls"`) sends a ClientHello and succeeds on a
+  ServerHello. The server name is the first name (names are sorted) of the first
+  route, in `Front.Routes` order and then `Transit.Fronts` order, that targets
+  the forward. It is valid only for a forward that is a front *route* target, and
+  such a forward must be probed with `tls`: `tcp` would only show that the front
+  is up. A forward that is only a front's default has no name to send and may be
+  probed with `tcp`, which reaches the default.
+- **Caveats.** Xray-only in practice: the agent declares the capability only
+  where its engine can do this, and PSP must not read the capability as available
+  on other engines. A client must not split its ClientHello across TLS records;
+  the front reads the SNI from the first record, so a split ClientHello does not
+  reach its route. Sniffing waits for the first bytes, so a plain-HTTP probe
+  (which sends nothing TLS-shaped) is not handed on until the sniff gives up.
+
+## Compressed sync (v0.9.0)
+
+`MaxSyncBodyBytes` bounds the raw JSON of one `/v1/node/sync` body, and the
+roster is sent whole whenever it changes, so a server's client count had a ceiling
+set by its roster's size. Roster JSON is highly repetitive, so the fix is to bound
+what travels separately from what is held. `sync.gzip.v1` (not an upgrade
+capability) lets either side send a body with `Content-Encoding: gzip`.
+
+- **Negotiation.** Both ends must say so. The agent declares the capability in
+  `NodeReport.Capabilities`; its first report is plain, because it cannot yet know
+  the panel accepts anything else. PSP may then gzip its responses to that agent,
+  and only to an agent that declared it. PSP says it accepts compressed requests
+  with `Accept-Encoding: gzip` on its responses (`AcceptsSyncGzip` reads it; a
+  `q` that is not a finite number in (0, 1] is not an offer); an agent compresses a request only after a response carried
+  that and only if it declared the capability. A receiver refuses a coding it did
+  not negotiate. The agent's state is a small machine (`SyncCompression`, with an
+  injectable clock): it starts plain; **only a 2xx response changes it, and its
+  `Accept-Encoding` replaces the state (absent means plain)**; a non-2xx response
+  (a 5xx included) or a request that got no response leaves it as it was. On a 400
+  or 415 to a compressed request the agent repeats the same request once in
+  plain, and gzip stays **off for one hour** (`SyncGzipCooldown`): advertisements
+  during the cooldown, the retry's own included, are ignored, and a later 2xx
+  that advertises gzip after it re-enables compression (`Rejected`). Nothing in
+  the body changes, and segment ETags are taken over the
+  canonical decoded bytes, so compression never moves a validator.
+- **Two limits.** `MaxSyncWireBytes` (16 MiB, the old `MaxSyncBodyBytes`) bounds
+  what crosses the wire, compressed or not; `MaxSyncDecodedBytes` (64 MiB) bounds
+  the body after decompression. A body with no coding is held to the wire limit
+  exactly as before, so a peer without the capability behaves byte-identically.
+  64 MiB is four times the wire limit: roster JSON repeats its keys in every
+  client and routinely shrinks by an order of magnitude, so this leaves headroom.
+  **Memory:** a decoded body of N bytes is transiently held about twice (the
+  chunks it was read into and the joined result), so a body at the ceiling costs
+  about 128 MiB at the join, and parsing the JSON costs several times N on top.
+  PSP, which may decode many reports at once, must bound concurrent decodes (a
+  semaphore sized to its memory); this module does not. Both limits are ceilings:
+  the decoder allocates what it reads, and a body that exceeds the decoded limit
+  is refused after about limit+1 bytes of chunks, without being joined.
+- **HTTP clients.** Go's default `http.Transport` adds `Accept-Encoding: gzip`
+  itself and then inflates the response transparently with no size limit, which
+  bypasses both limits. A caller must set `DisableCompression: true` (or set
+  `Accept-Encoding` explicitly) and decode with `DecodeSyncBody`. A message may
+  carry several `Content-Encoding` headers; read them all with
+  `SyncEncodingFromHeaders(header.Values("Content-Encoding"))`, which refuses
+  more than one.
+- **Helpers.** `DecodeSyncBody(r, contentEncoding)` reads one body under both
+  limits and returns the decoded bytes. The limit is enforced on the decompressed
+  output as it streams: the decoder stops after limit+1 bytes of output and the
+  rest of the stream is never inflated, so a bomb costs about the limit, not its
+  size. A legitimate body is read in chunks of at most 1 MiB and joined once, so
+  decoding holds up to twice the body at the join (at the ceiling, 128 MiB), not a
+  growing buffer's old and new copies; the gzip stream must be complete and valid, trailing bytes count
+  toward the wire limit, and any coding other than none, `identity` or `gzip`
+  (a list, a parameter, `br`, `deflate`) is refused with `ErrSyncUnknownEncoding`
+  before anything is read. `EncodeSyncBody(body)` gzips a body, refusing one over
+  either limit. The output has no timestamp, so it is deterministic for a Go
+  release. Failures are `ErrSyncWireTooLarge`, `ErrSyncDecodedTooLarge` and
+  `ErrSyncUnknownEncoding`.
+
 ## Development
 
 ```bash

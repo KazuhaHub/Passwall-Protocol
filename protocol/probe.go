@@ -33,6 +33,17 @@ const (
 const (
 	ProbeMethodTCP  = "tcp"
 	ProbeMethodQUIC = "quic"
+	// ProbeMethodTLS sends a ClientHello naming a server name of the forward's
+	// front route, and succeeds on a ServerHello. The name is the first of the
+	// first route, in Front.Routes order and across Transit.Fronts order, that
+	// targets the forward (server names are sorted, so "first" is the least).
+	// It is what a forward behind a front must be probed with: a plain TCP
+	// connect would only show that the front is up, not that the route reaches
+	// the landing, so ProbeMethodTCP is refused for it. Valid only for a forward
+	// that is a front route target; one that is only a front's default has no
+	// name to send and may be probed with ProbeMethodTCP, which then reaches the
+	// default.
+	ProbeMethodTLS = "tls"
 )
 
 // Probe error classes. A stable set and not free text: the panel groups and
@@ -93,8 +104,9 @@ type ProbeSettings struct {
 // ProbeTarget names one forward to probe and how.
 type ProbeTarget struct {
 	Key ForwardKey `json:"key"`
-	// Method is ProbeMethodTCP or ProbeMethodQUIC. It is the handshake that is
-	// timed, so "quic" is for a forward whose network carries UDP.
+	// Method is ProbeMethodTCP, ProbeMethodQUIC or ProbeMethodTLS. It is the
+	// handshake that is timed, so "quic" is for a forward whose network carries
+	// UDP and "tls" for one that is a front route target.
 	Method string `json:"method"`
 }
 
@@ -146,9 +158,9 @@ func ValidateProbeSettings(probe ProbeSettings) error {
 			return fmt.Errorf("probe: %w", err)
 		}
 		switch target.Method {
-		case ProbeMethodTCP, ProbeMethodQUIC:
+		case ProbeMethodTCP, ProbeMethodQUIC, ProbeMethodTLS:
 		default:
-			return fmt.Errorf("probe forward %s method %q is not %q or %q", target.Key, target.Method, ProbeMethodTCP, ProbeMethodQUIC)
+			return fmt.Errorf("probe forward %s method %q is not %q, %q or %q", target.Key, target.Method, ProbeMethodTCP, ProbeMethodQUIC, ProbeMethodTLS)
 		}
 		if _, exists := seen[target.Key]; exists {
 			return fmt.Errorf("probe names forward %q twice", target.Key)
@@ -179,6 +191,15 @@ func validateProbeSettings(transit *Transit) error {
 	for _, forward := range transit.Forwards {
 		forwards[forward.Key] = forward
 	}
+	// A TLS probe needs a server name to send, and only a route has one.
+	frontRouteForwards := make(map[ForwardKey]bool)
+	for _, front := range transit.Fronts {
+		for _, route := range front.Routes {
+			if route.Target.Forward != "" {
+				frontRouteForwards[route.Target.Forward] = true
+			}
+		}
+	}
 	for _, target := range probe.Forwards {
 		forward, ok := forwards[target.Key]
 		if !ok {
@@ -188,6 +209,12 @@ func validateProbeSettings(transit *Transit) error {
 		// nothing listens on, and report a healthy line as down.
 		if target.Method == ProbeMethodQUIC && forward.Network != ForwardNetworkTCPUDP {
 			return fmt.Errorf("probe forward %s method quic needs a forward whose network includes udp", target.Key)
+		}
+		if target.Method == ProbeMethodTLS && !frontRouteForwards[target.Key] {
+			return fmt.Errorf("probe forward %s method tls needs a forward that is a front route target", target.Key)
+		}
+		if target.Method == ProbeMethodTCP && frontRouteForwards[target.Key] {
+			return fmt.Errorf("probe forward %s is a front route target; probe it with method tls", target.Key)
 		}
 	}
 	return nil

@@ -270,13 +270,18 @@ func validateReportedObject(status ObjectStatus) error {
 	switch status.Stream {
 	case StreamConfig:
 		// A config object is a listener or, for an agent that relays, a
-		// forward. Both are config-stream objects with the same four states.
+		// forward, a link or a front. All are config-stream objects with the
+		// same four states.
 		if strings.HasPrefix(status.Key, forwardKeyPrefix) {
 			if _, err := ForwardKey(status.Key).RowID(); err != nil {
 				return err
 			}
 		} else if strings.HasPrefix(status.Key, linkKeyPrefix) {
 			if _, err := LinkKey(status.Key).RowID(); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(status.Key, frontKeyPrefix) {
+			if _, err := FrontKey(status.Key).RowID(); err != nil {
 				return err
 			}
 		} else if _, err := ListenerKey(status.Key).RowID(); err != nil {

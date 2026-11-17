@@ -107,3 +107,13 @@ func TestProbeResultVectors(t *testing.T) {
 		return protocol.ValidateProbeResults(results)
 	})
 }
+
+func TestFrontTransitVectors(t *testing.T) {
+	checkVectors(t, FrontTransitVectors, func(raw string) error {
+		var transit protocol.Transit
+		if err := json.Unmarshal([]byte(raw), &transit); err != nil {
+			return err
+		}
+		return protocol.ValidateTransit(&transit)
+	})
+}
