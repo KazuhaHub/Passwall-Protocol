@@ -223,3 +223,23 @@ func TestProbeLinkURLPortBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeResultLoopbackPort(t *testing.T) {
+	for _, test := range []struct {
+		kind string
+		port int
+		ok   bool
+	}{
+		{ProbeKindE2E, 0, true},
+		{ProbeKindE2E, ProbePortFirst, true},
+		{ProbeKindE2E, ProbePortLast, true},
+		{ProbeKindE2E, ProbePortFirst - 1, false},
+		{ProbeKindE2E, ProbePortLast + 1, false},
+		{ProbeKindTransport, ProbePortFirst, false},
+	} {
+		err := ValidateProbeResults([]ProbeResult{{Key: "lnk_1", Kind: test.kind, LoopbackPort: test.port}})
+		if (err == nil) != test.ok {
+			t.Errorf("kind %s port %d: %v, want valid = %t", test.kind, test.port, err, test.ok)
+		}
+	}
+}
