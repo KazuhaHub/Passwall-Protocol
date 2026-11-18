@@ -116,34 +116,32 @@ const SyncGzipCooldown = time.Hour
 
 // SyncCompression is the agent's side of the negotiation, as a state machine.
 //
-//   - It starts plain. A 2xx response REPLACES the state: ObserveResponse takes
-//     its Accept-Encoding header, and an absent header means plain. A panel
-//     that stops advertising (rolled back, or a proxy that strips the header)
-//     therefore stops being sent compressed requests on the next round. A
-//     response that is not 2xx, and a request that got no response at all,
-//     leave the state as it was: an error page or a dropped connection says
-//     nothing about what the panel accepts.
-//   - A request is compressed only when the agent declared CapabilitySyncGzip
-//     and the state says gzip.
-//   - Any non-2xx response to a compressed request that is not a clear
-//     transient means the path did not take the coding: Rejected returns true,
-//     the agent sends the SAME request once more in plain, and gzip stays off
-//     for SyncGzipCooldown. The transients are 429, 500, 502, 503, 504 and the
-//     520-530 range a CDN in front of the panel answers while the origin is
-//     unreachable (and a request that got no response at all): they say the
-//     panel is busy, restarting or down, not that it refuses the coding, so
-//     they change nothing. Everything else counts, 400 and 415 but also 401,
-//     403, 406, 411, 413 and 501, because a WAF or reverse proxy that passes
-//     plain POSTs (so the panel's 2xx advertises gzip) may refuse
-//     Content-Encoding with any of them.
-//   - The cooldown does not forget what the panel advertised: advertisements
-//     during it are ignored (so the plain retry's own 2xx cannot switch gzip
-//     back on), and when it ends the agent tries gzip again on what it last
-//     learned. Waiting instead for a fresh advertisement would strand an agent
-//     whose plain reports keep failing (a body over a proxy's plain size limit)
-//     plain for good, since no 2xx would ever come. A path that still refuses
-//     the coding costs one extra request per cooldown; a bad credential, one
-//     extra request per cooldown as well.
+//   - It starts plain. Outside a cooldown a 2xx response REPLACES the state:
+//     ObserveResponse takes its Accept-Encoding header, and an absent header
+//     means plain. A response that is not 2xx, and a request that got no
+//     response at all, leave the state as it was: an error page or a dropped
+//     connection says nothing about what the panel accepts.
+//   - A request is compressed only when the agent declared CapabilitySyncGzip,
+//     the state says gzip and no cooldown is running.
+//   - A non-2xx answer to a compressed request may be a refusal of the coding
+//     (a panel without gzip answers 400 or 415; a WAF or proxy that passes
+//     plain POSTs may answer 403, 406, 411, 501, ...) or may have nothing to do
+//     with it. Rejected says whether to resend the SAME request once in plain:
+//     yes for any non-2xx except the transients (408, 429, 500, 502, 503, 504
+//     and the 520-530 a CDN answers while the origin is unreachable: the panel
+//     is slow, busy, restarting or down) and 401/407 (credentials: the plain
+//     resend would fail the same way). Rejected changes nothing.
+//   - The plain resend decides (PlainRetried). If it succeeds, the coding was
+//     the problem: gzip stays off for SyncGzipCooldown. If it fails too, the
+//     coding was not the problem and nothing changes, so an unrelated refusal
+//     (a report the panel found invalid, a truncated body) never costs an hour
+//     without compression, which for a report that fits a proxy's limit only
+//     compressed would be an hour without sync.
+//   - During the cooldown an advertisement is ignored (the plain resend's own
+//     2xx would otherwise switch gzip straight back on), but a 2xx WITHOUT one
+//     still switches it off: a panel rolled back to one without gzip stops
+//     getting compressed requests. When the cooldown ends the agent tries gzip
+//     again on what it last learned, without waiting for a fresh advertisement.
 //
 // The clock is a parameter so that tests can move it. It is not safe for
 // concurrent use.
@@ -175,34 +173,52 @@ func (c *SyncCompression) RequestEncoding() string {
 func (c *SyncCompression) cooling() bool { return c.now().Before(c.until) }
 
 // ObserveResponse records a response: its status and its Accept-Encoding header
-// (empty when absent). Only a 2xx changes the state, and not during a cooldown.
+// (empty when absent). Only a 2xx changes the state. During a cooldown it can
+// only switch gzip off, never on.
 func (c *SyncCompression) ObserveResponse(status int, acceptEncoding string) {
-	if status < 200 || status > 299 || c.cooling() {
+	if status < 200 || status > 299 {
 		return
 	}
-	c.accepts = AcceptsSyncGzip(acceptEncoding)
+	accepts := AcceptsSyncGzip(acceptEncoding)
+	if c.cooling() && accepts {
+		return
+	}
+	c.accepts = accepts
 }
 
 // Rejected is called with the status of a response to a request sent with
-// sentEncoding. It returns true when the request should be repeated once in
-// plain, and has then switched gzip off for SyncGzipCooldown. It is true for a
-// gzip request answered with any non-2xx status except the transients (see
-// syncTransient); never for a plain request or a 2xx.
+// sentEncoding, and says whether to resend that request once in plain: true
+// for a gzip request answered with a non-2xx status other than the transients
+// and 401/407 (see SyncCompression). It changes no state; PlainRetried does,
+// with the outcome of the resend.
 func (c *SyncCompression) Rejected(status int, sentEncoding string) bool {
 	if sentEncoding != SyncEncodingGzip || (status >= 200 && status <= 299) || syncTransient(status) {
 		return false
 	}
-	c.until = c.now().Add(SyncGzipCooldown)
+	switch status {
+	case 401, 407:
+		return false
+	}
 	return true
 }
 
-// syncTransient reports a status that says the panel is busy, restarting or
-// unreachable rather than that the path refuses a coding: 429, 500, 502, 503,
-// 504, and 520-530, which CDNs (Cloudflare among them) answer when the origin
-// cannot be reached.
+// PlainRetried records the status of the plain resend Rejected asked for. A 2xx
+// proves the coding was refused and starts SyncGzipCooldown; anything else
+// leaves the state as it was. Call it before ObserveResponse for the same
+// response, so the resend's own advertisement falls inside the cooldown.
+func (c *SyncCompression) PlainRetried(status int) {
+	if status >= 200 && status <= 299 {
+		c.until = c.now().Add(SyncGzipCooldown)
+	}
+}
+
+// syncTransient reports a status that says the panel is slow, busy, restarting
+// or unreachable rather than that the path refuses a coding: 408, 429, 500,
+// 502, 503, 504, and 520-530, which CDNs (Cloudflare among them) answer when the
+// origin cannot be reached.
 func syncTransient(status int) bool {
 	switch status {
-	case 429, 500, 502, 503, 504:
+	case 408, 429, 500, 502, 503, 504:
 		return true
 	}
 	return status >= 520 && status <= 530

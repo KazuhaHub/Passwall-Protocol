@@ -471,14 +471,16 @@ capability) lets either side send a body with `Content-Encoding: gzip`.
   injectable clock): it starts plain; **only a 2xx response changes it, and its
   `Accept-Encoding` replaces the state (absent means plain)**; a non-2xx response
   (a 5xx included) or a request that got no response leaves it as it was. On any
-  non-2xx response to a compressed request other than the transients 429, 500,
-  502, 503, 504 and 520-530 (400, 401, 403, 406, 411, 413, 415, 501, ...; a WAF
-  or proxy may refuse the coding with any of them) the agent repeats the same
-  request once in plain, and gzip stays **off for one hour** (`SyncGzipCooldown`):
-  advertisements during the cooldown, the retry's own included, are ignored.
-  When the cooldown ends the agent tries gzip again on what it last learned,
-  without waiting for a fresh advertisement, so an agent whose plain reports keep
-  failing is not left plain for good (`Rejected`). Nothing in
+  non-2xx response to a compressed request other than the transients (408, 429,
+  500, 502, 503, 504, 520-530) and 401/407, the agent resends the same request
+  once in plain (`Rejected`). Only if that plain resend succeeds was the coding the
+  problem: gzip then stays **off for one hour** (`SyncGzipCooldown`, started by
+  `PlainRetried`). If it fails too, nothing changes, so an unrelated refusal
+  never costs an hour without compression. During the cooldown an advertisement
+  is ignored but a 2xx without one still switches gzip off (a panel rolled back
+  to one without gzip); when the cooldown ends the agent tries gzip again on what
+  it last learned. The state lives in the agent's memory and starts plain at
+  every start. Nothing in
   the body changes, and segment ETags are taken over the
   canonical decoded bytes, so compression never moves a validator.
 - **Two limits.** `MaxSyncWireBytes` (16 MiB, the old `MaxSyncBodyBytes`) bounds

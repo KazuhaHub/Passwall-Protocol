@@ -291,58 +291,58 @@ func TestSyncCompressionStateMachine(t *testing.T) {
 		t.Fatal("a 5xx changed the state")
 	}
 
-	// A refusal of the coding: one plain retry, then off for an hour, then on
-	// again on what was last learned.
-	for _, status := range []int{400, 401, 403, 404, 406, 411, 413, 415, 501} {
-		c.ObserveResponse(200, "gzip")
-		if !c.Rejected(status, "gzip") || c.RequestEncoding() != "" {
-			t.Fatalf("a %d to a gzip request did not fall back to plain", status)
-		}
-		c.ObserveResponse(200, "gzip") // the retry's own 2xx advertises gzip
-		if c.RequestEncoding() != "" {
-			t.Fatal("an advertisement during the cooldown switched it on")
-		}
-		clock = clock.Add(SyncGzipCooldown - time.Second)
-		c.ObserveResponse(200, "gzip")
-		if c.RequestEncoding() != "" {
-			t.Fatal("it came back before the cooldown ended")
-		}
-		clock = clock.Add(2 * time.Second)
-		if c.RequestEncoding() != "gzip" {
-			t.Fatal("the end of the cooldown did not try gzip again on what was learned")
+	// A non-2xx to a gzip request asks for one plain resend, and changes
+	// nothing by itself.
+	for _, status := range []int{400, 403, 404, 406, 411, 413, 415, 501} {
+		if !c.Rejected(status, "gzip") || c.RequestEncoding() != "gzip" {
+			t.Fatalf("a %d to a gzip request: resend %v, state %q", status, c.Rejected(status, "gzip"), c.RequestEncoding())
 		}
 	}
-	// No 2xx needed to come back: an agent whose plain reports keep failing
-	// (a body over a proxy's plain limit) is not stranded plain.
-	c.ObserveResponse(200, "gzip")
-	if !c.Rejected(403, "gzip") {
-		t.Fatal("a 403 to a gzip request was not a refusal")
-	}
-	for i := 0; i < 48; i++ {
-		clock = clock.Add(time.Hour)
-		c.ObserveResponse(413, "") // the plain reports keep failing
-	}
-	if c.RequestEncoding() != "gzip" {
-		t.Fatal("an agent with no 2xx since a refusal stayed plain after the cooldown")
-	}
-	// A 2xx after the cooldown still replaces the state: a panel that stopped
-	// advertising gets plain requests.
-	c.ObserveResponse(200, "")
-	if c.RequestEncoding() != "" {
-		t.Fatal("a 2xx without the header after the cooldown did not switch it off")
-	}
-	c.ObserveResponse(200, "gzip")
+	// No resend: plain requests, 2xx, transients, and credentials (a plain
+	// resend would fail the same way).
 	for _, tc := range []struct {
 		status int
 		sent   string
-	}{{400, ""}, {415, ""}, {403, ""}, {500, "gzip"}, {502, "gzip"}, {503, "gzip"}, {504, "gzip"}, {429, "gzip"},
-		{520, "gzip"}, {522, "gzip"}, {530, "gzip"}, {200, "gzip"}, {204, "gzip"}} {
+	}{{400, ""}, {415, ""}, {403, ""}, {401, "gzip"}, {407, "gzip"}, {408, "gzip"}, {429, "gzip"}, {500, "gzip"},
+		{502, "gzip"}, {503, "gzip"}, {504, "gzip"}, {520, "gzip"}, {522, "gzip"}, {530, "gzip"}, {200, "gzip"}, {204, "gzip"}} {
 		if c.Rejected(tc.status, tc.sent) {
-			t.Errorf("status %d for %q treated as a rejection", tc.status, tc.sent)
+			t.Errorf("status %d for %q asked for a plain resend", tc.status, tc.sent)
 		}
 	}
+	// The resend failing too means the coding was not the problem: no cooldown.
+	for _, status := range []int{400, 401, 403, 413, 502} {
+		c.PlainRetried(status)
+		if c.RequestEncoding() != "gzip" {
+			t.Fatalf("a failed plain resend (%d) switched compression off", status)
+		}
+	}
+	// The resend succeeding proves the refusal: off for an hour, the resend's
+	// own advertisement ignored, then gzip again on what was learned.
+	c.PlainRetried(200)
+	c.ObserveResponse(200, "gzip")
+	if c.RequestEncoding() != "" {
+		t.Fatal("a successful plain resend did not start the cooldown")
+	}
+	clock = clock.Add(SyncGzipCooldown - time.Second)
+	c.ObserveResponse(200, "gzip")
+	if c.RequestEncoding() != "" {
+		t.Fatal("it came back before the cooldown ended")
+	}
+	clock = clock.Add(2 * time.Second)
 	if c.RequestEncoding() != "gzip" {
-		t.Fatal("an unrelated status switched compression off")
+		t.Fatal("the end of the cooldown did not try gzip again on what was learned")
+	}
+	// During a cooldown a 2xx without the header still switches it off: a
+	// panel rolled back to one without gzip stops getting compressed requests.
+	c.PlainRetried(200)
+	c.ObserveResponse(200, "")
+	clock = clock.Add(SyncGzipCooldown + time.Second)
+	if c.RequestEncoding() != "" {
+		t.Fatal("a panel that stopped advertising during the cooldown was sent gzip after it")
+	}
+	c.ObserveResponse(200, "gzip")
+	if c.RequestEncoding() != "gzip" {
+		t.Fatal("a 2xx advertisement after the cooldown did not switch it on")
 	}
 	// Never on without the declaration.
 	undeclared := NewSyncCompression(false, nil)
