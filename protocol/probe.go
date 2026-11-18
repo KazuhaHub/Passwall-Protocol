@@ -19,6 +19,12 @@ import (
 // It is not an upgrade capability.
 const CapabilityTransitProbe = "transit.probe.v1"
 
+// The agent allocates internal link probe inbounds within this loopback range.
+const (
+	ProbePortFirst = 31000
+	ProbePortLast  = 31999
+)
+
 // Probe kinds. A link has two results because they answer different questions:
 // "transport" is whether the tunnel to the exit is up, "e2e" is whether
 // traffic gets through the exit to the internet. Telling them apart is what
@@ -134,6 +140,9 @@ type ProbeResult struct {
 	// LastSuccessMS is the agent wall clock of the last success, zero (omitted)
 	// when there has been none since the agent started.
 	LastSuccessMS int64 `json:"last_success_ms,omitempty"`
+	// LoopbackPort is the agent's internal TCP listener for an e2e probe.
+	// Zero means the agent did not report a listener.
+	LoopbackPort int `json:"loopback_port,omitempty"`
 }
 
 // ValidateProbeSettings checks settings in isolation. That every named forward
@@ -277,6 +286,10 @@ func ValidateProbeResults(results []ProbeResult) error {
 }
 
 func validateProbeResult(result ProbeResult) error {
+	if result.LoopbackPort != 0 && (result.Kind != ProbeKindE2E ||
+		result.LoopbackPort < ProbePortFirst || result.LoopbackPort > ProbePortLast) {
+		return fmt.Errorf("probe %s has invalid loopback_port %d for kind %q", result.Key, result.LoopbackPort, result.Kind)
+	}
 	switch result.Kind {
 	case ProbeKindE2E, ProbeKindTransport:
 		// Row ids are validated through the typed keys so the canonical-form

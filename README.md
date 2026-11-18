@@ -281,6 +281,10 @@ own.
 ## Link probes (v0.9.0)
 
 `Transit.Probe` asks an agent to self-test the lines it is the entry of, and
+For an end-to-end probe, an agent can report its active internal TCP listener in
+`loopback_port` (127.0.0.1, ports 31000–31999). An omitted port means that the
+agent did not report a listener.
+
 `NodeReport.Probes` carries what it measured. It is gated by
 `transit.probe.v1` (not an upgrade capability), and the gate is mandatory: an
 agent that does not know the field would leave the panel showing "never probed"
