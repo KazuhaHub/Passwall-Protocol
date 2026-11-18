@@ -83,6 +83,11 @@ type Transit struct {
 	// nothing, so a server that shares no port keeps the config it had before
 	// fronts existed.
 	Fronts []Front `json:"fronts,omitempty"`
+	// SourceSets are the named source-address lists that Client.SourceGuard
+	// refers to, gated by CapabilitySourceGuard (see sourceguard.go). Empty
+	// sends nothing, so a server with no guarded client keeps the config it had
+	// before source guards existed.
+	SourceSets []SourceSet `json:"source_sets,omitempty"`
 }
 
 // Forward relays every connection arriving on Port to Target:TargetPort
@@ -147,6 +152,9 @@ func ValidateTransit(transit *Transit) error {
 		return err
 	}
 	if err := validateFronts(transit); err != nil {
+		return err
+	}
+	if err := validateSourceSets(transit); err != nil {
 		return err
 	}
 	return validateProbeSettings(transit)

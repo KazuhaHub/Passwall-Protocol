@@ -105,6 +105,20 @@ type NodeReport struct {
 	// absence as "no probe results" would blank a healthy line's last numbers.
 	Probes []ProbeResult `json:"probes,omitempty"`
 
+	// SourceGuardHits are the connections the source guard refused, aggregated
+	// per (set, listener, source). Only an agent that declared
+	// CapabilitySourceGuard sends it, and only on a full report: it is a bounded
+	// window of recent refusals, and a panel that read a partial report's
+	// absence as "no refusals" would clear a warning that is still true.
+	SourceGuardHits []SourceGuardHit `json:"source_guard_hits,omitempty"`
+
+	// InterfaceAddresses are the agent's own public source addresses: global
+	// unicast, excluding private (RFC 1918, ULA), CGNAT and documentation
+	// ranges, sorted and unique. The panel adds them to the source set of a
+	// relay line whose entry is this agent. Same gate and full-report-only rule
+	// as SourceGuardHits.
+	InterfaceAddresses []string `json:"interface_addresses,omitempty"`
+
 	// Clients is a FULL enumeration INCLUDING ZERO VALUES. On a report with
 	// Partial=false, absence from this list is a protocol issue, never idleness.
 	// (On a partial report the field is absent wholesale and says nothing; see

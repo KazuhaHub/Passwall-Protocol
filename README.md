@@ -511,6 +511,46 @@ capability) lets either side send a body with `Content-Encoding: gzip`.
   release. Failures are `ErrSyncWireTooLarge`, `ErrSyncDecodedTooLarge` and
   `ErrSyncUnknownEncoding`.
 
+## Source guard (v0.10.0)
+
+Direct, plain-forward and CDN lines end on the same landing listener, so the
+listener cannot tell which line a connection came through, and a per-line client
+identity could be used on the wrong line. The source guard makes the core refuse
+the mismatch. It is gated by `transit.source_guard.v1` (not an upgrade
+capability), and the gate is mandatory: an agent that does not know the fields
+accepts every connection while the config reads as applied, which is the bypass
+the guard exists to close. PSP must send `Transit.SourceSets` and
+`Client.SourceGuard` only to an agent that declared it, and the agent declares it
+only where its engine can enforce the guard.
+
+- **Sets.** `Transit.SourceSets` is `[{key, cidrs}]`. A key is `src_<suffix>`
+  with the suffix matching `[a-z0-9][a-z0-9_-]{0,47}`. Keys are unique, at most
+  4096 sets; each set has 1..1024 CIDRs, each a canonical prefix (equal to its
+  masked form, IPv4 or IPv6, no zone, no IPv4-mapped IPv6), unique within the set.
+- **Guards.** `Client.SourceGuard` is `{allow_from, deny_from}`; exactly one of
+  them is set (a guard with neither is invalid, so omit it). `deny_from` is at
+  most 64 unique keys. The roster cannot see the config, so
+  `ValidateClientSourceGuard` does not check that the sets exist.
+- **Semantics.** The source is the address the core sees; behind a front it is the
+  address from the PROXY protocol header. `allow_from`: the client's connections,
+  on any of its listeners, are accepted only when the source is inside the set;
+  if the set is missing from the config the client is refused entirely (fail
+  closed). `deny_from`: refused when the source is inside any listed set; a
+  missing set is ignored. Without guards the encoding is byte-identical to before.
+- **Hits.** `NodeReport.SourceGuardHits` is `[{set, listener, source_ip, count,
+  last_seen_ms}]`, at most 256, unique per (set, listener, source), count and
+  time positive, `source_ip` canonical. For an allow guard `set` is the set the
+  source was outside of; for a deny guard, a set that contains the source. How
+  completely an engine can observe refusals is the agent's to document.
+- **Interface addresses.** `NodeReport.InterfaceAddresses` lists the agent's own
+  addresses that can be a public source: canonical global unicast, excluding
+  private (RFC 1918, IPv6 ULA), CGNAT (100.64.0.0/10) and documentation ranges,
+  sorted ascending, unique, at most 64 (`IsPublicSourceAddr` is the filter). The
+  panel uses them as a relay line's source set when this agent is the entry.
+- **Full reports only.** Both report fields are omitted from partial reports, and
+  `ValidateNodeReportBase` refuses a partial report that carries them.
+  `ValidateNodeReport` refuses them without the capability.
+
 ## Development
 
 ```bash

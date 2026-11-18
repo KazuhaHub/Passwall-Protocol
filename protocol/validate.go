@@ -52,7 +52,8 @@ func ValidateNodeReportBase(report NodeReport) error {
 		if len(report.Objects) != 0 || len(report.ListenerCounters) != 0 ||
 			len(report.Clients) != 0 || len(report.Subjects) != 0 ||
 			len(report.ForwardCounters) != 0 || len(report.LinkCounters) != 0 ||
-			len(report.Probes) != 0 {
+			len(report.Probes) != 0 || len(report.SourceGuardHits) != 0 ||
+			len(report.InterfaceAddresses) != 0 {
 			return fmt.Errorf("partial report must omit full enumerations")
 		}
 		return validateOutbox(report)
@@ -115,6 +116,12 @@ func ValidateNodeReportBase(report NodeReport) error {
 		seenLinks[counter.Key] = struct{}{}
 	}
 	if err := ValidateProbeResults(report.Probes); err != nil {
+		return err
+	}
+	if err := ValidateSourceGuardHits(report.SourceGuardHits); err != nil {
+		return err
+	}
+	if err := ValidateInterfaceAddresses(report.InterfaceAddresses); err != nil {
 		return err
 	}
 	seenClients := make(map[ClientKey]struct{}, len(report.Clients))
@@ -217,6 +224,10 @@ func ValidateNodeReport(report NodeReport) error {
 	}
 	if len(report.Probes) > 0 && !hasCapability(report.Capabilities, CapabilityTransitProbe) {
 		return fmt.Errorf("probes without %s capability", CapabilityTransitProbe)
+	}
+	if (len(report.SourceGuardHits) > 0 || len(report.InterfaceAddresses) > 0) &&
+		!hasCapability(report.Capabilities, CapabilitySourceGuard) {
+		return fmt.Errorf("source guard observations without %s capability", CapabilitySourceGuard)
 	}
 	if report.Host == nil {
 		// Declaring the capability and carrying no sample is legal — that is
