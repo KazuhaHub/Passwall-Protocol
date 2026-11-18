@@ -206,7 +206,8 @@ without one is byte-identical to v0.3.0.
   (`lnk_<id>`) the connection left through, or would have left through for a
   block. Empty or absent means it left from the server itself. PSP asks for it
   with `DestinationPolicy.AuditEgress` (`audit_egress`), set only for an agent
-  that declared the capability, runs Xray and has egress bindings. `egress` is
+  that declared the capability, runs Xray and has egress bindings or routes
+  through links (its hits can leave through a link). `egress` is
   part of the hit's aggregation key, so the same rule and destination through two
   links are two rows. Both fields are omitted when empty or false: a hit without
   egress and the digest of a policy without the flag are byte-identical to
@@ -276,6 +277,235 @@ know the fields would serve the bound listeners from its own address.
 
 Multi-hop chains are a later addition to `Transit`, behind a capability of their
 own.
+
+## Link probes (v0.9.0)
+
+`Transit.Probe` asks an agent to self-test the lines it is the entry of, and
+`NodeReport.Probes` carries what it measured. It is gated by
+`transit.probe.v1` (not an upgrade capability), and the gate is mandatory: an
+agent that does not know the field would leave the panel showing "never probed"
+for a line nobody is measuring. An agent that did not declare it must not send
+`Probes`; `ValidateNodeReport` refuses them.
+
+- **What is probed.** The links probed are exactly `Transit.LinksOut`: the entry
+  is the side that dials the exit, and there is no separate list to disagree
+  with. Forwards are opt-in through `ProbeSettings.Forwards`, each with a method
+  (`tcp` or `quic`) and each present in the same `Transit.Forwards`.
+- **Settings.** `interval_seconds` 30..3600, `timeout_ms` 500..10000. `link_url`
+  is an absolute `http` or `https` URL without credentials, at most 512 bytes;
+  empty means links are probed transport-only and no `e2e` result exists.
+  Settings with no `LinksOut` and no forward are refused, so the panel never
+  sends a block that means nothing.
+- **Results.** One `ProbeResult` per (key, kind): `e2e` and `transport` for a
+  link (`lnk_`), `forward` for a forward (`fwd_`). `failures` is within
+  `0..attempts`, `attempts` at most 1000, RTTs are ordered and all zero when no
+  attempt succeeded, and `last_error` is one of `timeout`, `refused`, `tls`,
+  `http_status`, `dns`, `probe_unavailable`, `other`.
+- **Full reports only.** Like the counters, `Probes` is absent from a partial
+  report, and a partial report that carries them is refused. Without `Probe` and
+  `Probes` the encodings are byte-identical to v0.8.x.
+
+## Routing by destination (v0.9.0)
+
+`Transit.Routes` lets one listener leave through different exits depending on
+where the connection is going: streaming through one link, mail from the server
+itself, the rest through the listener's egress binding. It is gated by
+`transit.route.v1` (not an upgrade capability), and the gate is mandatory: an
+agent that does not know the field sends everything through the default exit,
+so a user would be served from the wrong country with no error anywhere. The
+same gate covers `DestinationRule.Exits`. Without `Routes` and `Exits` the
+encodings are byte-identical to before.
+
+- **Routes.** `ListenerRoutes{listener, rules}`, one entry per listener, at most
+  64 rules per listener and 1024 in all. A `RouteRule` has an id `r<n>` (n >= 1,
+  unique per listener), matchers (`domains`, `cidrs`, `ports`, `network`, with
+  the meaning they have in a policy rule) and an `exit`. The first matching rule
+  decides; a connection no rule matches leaves through the listener's default
+  exit, which is its `EgressBinding` if it has one and the agent itself
+  otherwise. A rule must match on something. `MatchRoute(transit, listener,
+  input, resolve)` is the reference model and returns `(exit, known)`: input a
+  rule depends on and leaves unknown (a port, a network, a target) makes that
+  rule untestable, and then `known` is false and `exit` is only a guess.
+  `MatchRouted` leaves the exit unknown in that case, so a policy rule with
+  `Exits` comes back untestable and the result conditional, never a confident
+  verdict on a guess. Under `resolve: on_demand` the router resolves a hostname
+  for a rule's CIDRs, so a hostname meets them through `MatchInput.Resolved`
+  (nil: untestable); under as-is a hostname never matches CIDRs. A trailing dot
+  is not normalised.
+- **Exits.** `exit` is `local` (`LocalExit`) or a key of the same
+  `Transit.LinksOut`. `local` is a `LinkKey` in type only: `LinkKey.RowID`
+  rejects it, so it is valid nowhere but `RouteRule.Exit` and
+  `DestinationRule.Exits`, and a link, an egress binding, an audit hit or a
+  probe result can never carry it.
+- **Domains.** `domain:`, `full:` and `keyword:`. A `regexp:` is refused, so that
+  every route rule can be intersected with a policy rule exactly.
+- **Policy rules by exit.** `DestinationRule.Exits` is a sorted, duplicate-free
+  list of `local` and `lnk_` keys (sorted as text, so `lnk_10` precedes `lnk_3`).
+  Empty applies whatever the exit; otherwise the rule applies only to traffic
+  whose chosen exit is in the set. It is a scope like `Inbounds`, not a matcher,
+  and a source rule carries none. `MatchInput.Exit` carries the exit into
+  `MatchDestination` (unknown makes such a rule untestable), and `MatchRouted`
+  fills it from the transit. Whether a link is one of the agent's is the
+  Transit's question; the policy validator checks the form only.
+- **Compile contract.** The exit is the first matching route rule, else the
+  default. A consumer applying the policy per exit must emit, for each routed
+  listener and in route order, segment k = every policy rule whose `exits` allows
+  exit k (empty allows all), each ANDed with route rule k, followed by a
+  catch-all on route rule k to exit k; then the default segment. Earlier
+  segments consume the traffic of earlier route rules, and the result is
+  correct because of that ordering: the `exact` of `IntersectDestinations`
+  applies to one (policy rule, route rule) pair only and does not exclude
+  earlier route rules by itself.
+- **Intersection.** `IntersectDestinations(a, b)` is the conjunction of two
+  `DestinationMatcher`s, which is how the Xray compiler applies a policy rule to
+  the traffic one route rule sends out one exit. When `exact` is true the
+  result matches precisely what both match; it is fuzz-tested against the
+  reference matcher. When it is false the result is an over-approximation: it
+  matches everything both match and possibly more, never less. That is safe for
+  a block and wrong for an allow, so a caller that cannot over-match must refuse
+  an inexact result. Inexact pairs: a `regexp:` against a domain, keyword or
+  regexp; two keywords neither of which contains the other; and, under
+  `on_demand`, a hostname entry against an address matcher (a hostname that
+  merely resolves into the CIDRs matches) or two address matchers. A `full:` is
+  exact against everything, a keyword against a domain is exact (as a `regexp:`
+  entry when the domain does not hold the keyword, which a caller bounding
+  regexps must count) unless the domain or keyword is not ASCII or the
+  generated regexp exceeds 1024 bytes, in which case it is inexact, and a
+  result that matches nothing is `Never`, exact. An inexact result is a
+  superset: safe for a block, and it must never be used for an allow or an
+  observe rule.
+
+## SNI fronts (v0.9.0)
+
+`Transit.Fronts` lets several TLS or REALITY uses share one TCP port, normally
+443: the agent binds the port itself and routes each raw connection by the SNI of
+its ClientHello, without decrypting anything. It is gated by `transit.sni.v1`
+(not an upgrade capability), and the gate is mandatory: an agent that does not
+know the field would never bind the port where users reach the listeners that
+were moved off it, so every node on a shared 443 would go dark while the config
+reads as applied. Without `Fronts` the encoding is byte-identical to before.
+
+- **Keys and states.** A front is keyed by `FrontKey` (`fnt_<id>`), a type of its
+  own, and reports the usual four config-object states under that key. Fronts are
+  not listeners: they are not in `Coverage` and no client attaches to them.
+- **Shape.** `Front{key, listen, port, listeners, routes, default}`. At most 16
+  fronts, 256 routes per front, 1..16 server names per route. Names are sorted,
+  lowercase, exact (no wildcard or suffix match), pass the same server-name check
+  a REALITY link does, and appear in at most one route of a front. A front needs
+  at least one route and a `default`, which takes every connection no route names,
+  SNI absent included.
+- **Targets.** A `FrontTarget` names exactly one of `listener`, `forward`, `link`
+  or `external`.
+  - *Listener.* A listener keeps its public port in its own config; the front
+    lists it in `listeners` with a `loopback_port`, and the agent binds it to
+    `127.0.0.1:<loopback_port>` instead. Every fronted listener must be the
+    target of a route or the default, and loopback ports are 1..65535 and unique
+    across the whole transit. A loopback port must also not be the port of any
+    front, forward or incoming link whose bind includes 127.0.0.1's side of the
+    host: an empty `listen`, `0.0.0.0`, `::`, or any address in `127.0.0.0/8`
+    (`::1` is another socket and is not counted). **Not checked here:** the
+    listener's public port lives in its own config, which `ValidateTransit`
+    cannot see. It must equal `Front.Port`, and the listener must be a TCP
+    TLS or REALITY listener; the panel and the agent check this.
+  - *Forward.* A `Transit.Forwards` entry with network `tcp` and the same `listen`
+    and `port` as the front: the front owns the socket, and the forward says where
+    it lives so the two descriptions cannot disagree.
+  - *Link.* A `vless_reality` `Transit.LinksIn` entry with the same `listen` and
+    `port`. Routes to a link name only server names the link accepts
+    (`reality.server_names`), no route may send one of the link's names to another
+    target, and unless the link is also the default every one of its names must be
+    routed to it: a REALITY client reaches the link by its own server name.
+  - *External.* `{host, port}` and only as `default`: a real website that unknown
+    or absent SNIs are relayed to, so a scanner sees an ordinary site. The host is
+    a canonical IP or a lowercase DNS name, as for a forward. A host that means
+    this machine is refused whatever the port: loopback, the unspecified address,
+    all of `0.0.0.0/8`, `localhost` and `*.localhost`. So is a host:port that is a
+    bind of this transit: a front's, a forward's or an incoming link's `listen`
+    address on its port, mapped spellings included (a forward on
+    `203.0.113.5:8443` relaying to `203.0.113.5:443`, behind a front there, is a
+    loop of two sockets). A wildcard bind cannot be matched against a named host.
+    **Not detectable here:** with an empty `listen`, the host's own public
+    address on a bound port would loop back; the agent and the panel must check
+    it.
+- **One front each.** A listener, forward or link is behind at most one front
+  (it may be both a route target and the default of that front). Two fronts must
+  not share a bind: the same address and port, or one with an empty `listen` (every
+  address) over a specific one on the same port. A forward or incoming link whose
+  bind overlaps a front's is refused unless it is that front's target. An
+  IPv4-mapped IPv6 address is compared as the IPv4 address it maps. `0.0.0.0` overlaps every IPv4
+  address and `::` is taken as dual-stack and overlaps all, as on Linux.
+- **Probe.** `ProbeMethodTLS` (`"tls"`) sends a ClientHello and succeeds on a
+  ServerHello. The server name is the first name (names are sorted) of the first
+  route, in `Front.Routes` order and then `Transit.Fronts` order, that targets
+  the forward. It is valid only for a forward that is a front *route* target, and
+  such a forward must be probed with `tls`: `tcp` would only show that the front
+  is up. A forward that is only a front's default has no name to send and may be
+  probed with `tcp`, which reaches the default.
+- **Caveats.** Xray-only in practice: the agent declares the capability only
+  where its engine can do this, and PSP must not read the capability as available
+  on other engines. A client must not split its ClientHello across TLS records;
+  the front reads the SNI from the first record, so a split ClientHello does not
+  reach its route. Sniffing waits for the first bytes, so a plain-HTTP probe
+  (which sends nothing TLS-shaped) is not handed on until the sniff gives up.
+
+## Compressed sync (v0.9.0)
+
+`MaxSyncBodyBytes` bounds the raw JSON of one `/v1/node/sync` body, and the
+roster is sent whole whenever it changes, so a server's client count had a ceiling
+set by its roster's size. Roster JSON is highly repetitive, so the fix is to bound
+what travels separately from what is held. `sync.gzip.v1` (not an upgrade
+capability) lets either side send a body with `Content-Encoding: gzip`.
+
+- **Negotiation.** Both ends must say so. The agent declares the capability in
+  `NodeReport.Capabilities`; its first report is plain, because it cannot yet know
+  the panel accepts anything else. PSP may then gzip its responses to that agent,
+  and only to an agent that declared it. PSP says it accepts compressed requests
+  with `Accept-Encoding: gzip` on its responses (`AcceptsSyncGzip` reads it; a
+  `q` that is not a finite number in (0, 1] is not an offer); an agent compresses a request only after a response carried
+  that and only if it declared the capability. A receiver refuses a coding it did
+  not negotiate. The agent's state is a small machine (`SyncCompression`, with an
+  injectable clock): it starts plain; **only a 2xx response changes it, and its
+  `Accept-Encoding` replaces the state (absent means plain)**; a non-2xx response
+  (a 5xx included) or a request that got no response leaves it as it was. On a 400
+  or 415 to a compressed request the agent repeats the same request once in
+  plain, and gzip stays **off for one hour** (`SyncGzipCooldown`): advertisements
+  during the cooldown, the retry's own included, are ignored, and a later 2xx
+  that advertises gzip after it re-enables compression (`Rejected`). Nothing in
+  the body changes, and segment ETags are taken over the
+  canonical decoded bytes, so compression never moves a validator.
+- **Two limits.** `MaxSyncWireBytes` (16 MiB, the old `MaxSyncBodyBytes`) bounds
+  what crosses the wire, compressed or not; `MaxSyncDecodedBytes` (64 MiB) bounds
+  the body after decompression. A body with no coding is held to the wire limit
+  exactly as before, so a peer without the capability behaves byte-identically.
+  64 MiB is four times the wire limit: roster JSON repeats its keys in every
+  client and routinely shrinks by an order of magnitude, so this leaves headroom.
+  **Memory:** a decoded body of N bytes is transiently held about twice (the
+  chunks it was read into and the joined result), so a body at the ceiling costs
+  about 128 MiB at the join, and parsing the JSON costs several times N on top.
+  PSP, which may decode many reports at once, must bound concurrent decodes (a
+  semaphore sized to its memory); this module does not. Both limits are ceilings:
+  the decoder allocates what it reads, and a body that exceeds the decoded limit
+  is refused after about limit+1 bytes of chunks, without being joined.
+- **HTTP clients.** Go's default `http.Transport` adds `Accept-Encoding: gzip`
+  itself and then inflates the response transparently with no size limit, which
+  bypasses both limits. A caller must set `DisableCompression: true` (or set
+  `Accept-Encoding` explicitly) and decode with `DecodeSyncBody`. A message may
+  carry several `Content-Encoding` headers; read them all with
+  `SyncEncodingFromHeaders(header.Values("Content-Encoding"))`, which refuses
+  more than one.
+- **Helpers.** `DecodeSyncBody(r, contentEncoding)` reads one body under both
+  limits and returns the decoded bytes. The limit is enforced on the decompressed
+  output as it streams: the decoder stops after limit+1 bytes of output and the
+  rest of the stream is never inflated, so a bomb costs about the limit, not its
+  size. A legitimate body is read in chunks of at most 1 MiB and joined once, so
+  decoding holds up to twice the body at the join (at the ceiling, 128 MiB), not a
+  growing buffer's old and new copies; the gzip stream must be complete and valid, trailing bytes count
+  toward the wire limit, and any coding other than none, `identity` or `gzip`
+  (a list, a parameter, `br`, `deflate`) is refused with `ErrSyncUnknownEncoding`
+  before anything is read. `EncodeSyncBody(body)` gzips a body, refusing one over
+  either limit. The output has no timestamp, so it is deterministic for a Go
+  release. Failures are `ErrSyncWireTooLarge`, `ErrSyncDecodedTooLarge` and
+  `ErrSyncUnknownEncoding`.
 
 ## Development
 

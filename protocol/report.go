@@ -98,6 +98,13 @@ type NodeReport struct {
 	// it; absent from a partial report like the other enumerations.
 	LinkCounters []LinkCounters `json:"link_counters,omitempty"`
 
+	// Probes is the link and forward self-test, one entry per probe. Only an
+	// agent that declared CapabilityTransitProbe sends it. It is a full-report
+	// enumeration like LinkCounters and is NOT in the partial shape below: the
+	// results are a window per probe, and a panel that read a partial report's
+	// absence as "no probe results" would blank a healthy line's last numbers.
+	Probes []ProbeResult `json:"probes,omitempty"`
+
 	// Clients is a FULL enumeration INCLUDING ZERO VALUES. On a report with
 	// Partial=false, absence from this list is a protocol issue, never idleness.
 	// (On a partial report the field is absent wholesale and says nothing; see

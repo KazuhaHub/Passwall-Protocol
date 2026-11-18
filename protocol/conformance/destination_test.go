@@ -113,6 +113,8 @@ func TestDestinationMatchVectorsCoverTheSemantics(t *testing.T) {
 		"on_demand: a resolved address in a blocked cidr blocks the hostname", "on_demand: any resolved address is enough",
 		"on_demand: private table on a resolved address", "on_demand: no resolution given makes the ip rule untestable",
 		"on_demand: an empty resolution misses and is engine dependent", "as_is: resolved addresses are ignored",
+		"exits: the exit is in the set", "exits: local is in the set", "exits: the exit is outside the set",
+		"exits: an unknown exit is untestable", "exits: a definite miss beats an unknown exit", "exits: a rule without exits ignores the exit",
 		"default when nothing hits", "fields are anded", "port range", "network mismatch",
 	} {
 		if !have[name] {
