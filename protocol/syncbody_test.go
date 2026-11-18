@@ -291,8 +291,9 @@ func TestSyncCompressionStateMachine(t *testing.T) {
 		t.Fatal("a 5xx changed the state")
 	}
 
-	// A 400 or 415 to a gzip request: one plain retry, then off for an hour.
-	for _, status := range []int{400, 401, 403, 404, 406, 411, 413, 415, 501, 502} {
+	// A refusal of the coding: one plain retry, then off for an hour, then on
+	// again on what was last learned.
+	for _, status := range []int{400, 401, 403, 404, 406, 411, 413, 415, 501} {
 		c.ObserveResponse(200, "gzip")
 		if !c.Rejected(status, "gzip") || c.RequestEncoding() != "" {
 			t.Fatalf("a %d to a gzip request did not fall back to plain", status)
@@ -307,18 +308,35 @@ func TestSyncCompressionStateMachine(t *testing.T) {
 			t.Fatal("it came back before the cooldown ended")
 		}
 		clock = clock.Add(2 * time.Second)
-		if c.RequestEncoding() != "" {
-			t.Fatal("the end of the cooldown alone switched it on")
-		}
-		c.ObserveResponse(200, "gzip")
 		if c.RequestEncoding() != "gzip" {
-			t.Fatal("a 2xx advertisement after the cooldown did not re-enable it")
+			t.Fatal("the end of the cooldown did not try gzip again on what was learned")
 		}
 	}
+	// No 2xx needed to come back: an agent whose plain reports keep failing
+	// (a body over a proxy's plain limit) is not stranded plain.
+	c.ObserveResponse(200, "gzip")
+	if !c.Rejected(403, "gzip") {
+		t.Fatal("a 403 to a gzip request was not a refusal")
+	}
+	for i := 0; i < 48; i++ {
+		clock = clock.Add(time.Hour)
+		c.ObserveResponse(413, "") // the plain reports keep failing
+	}
+	if c.RequestEncoding() != "gzip" {
+		t.Fatal("an agent with no 2xx since a refusal stayed plain after the cooldown")
+	}
+	// A 2xx after the cooldown still replaces the state: a panel that stopped
+	// advertising gets plain requests.
+	c.ObserveResponse(200, "")
+	if c.RequestEncoding() != "" {
+		t.Fatal("a 2xx without the header after the cooldown did not switch it off")
+	}
+	c.ObserveResponse(200, "gzip")
 	for _, tc := range []struct {
 		status int
 		sent   string
-	}{{400, ""}, {415, ""}, {403, ""}, {500, "gzip"}, {503, "gzip"}, {504, "gzip"}, {429, "gzip"}, {200, "gzip"}, {204, "gzip"}} {
+	}{{400, ""}, {415, ""}, {403, ""}, {500, "gzip"}, {502, "gzip"}, {503, "gzip"}, {504, "gzip"}, {429, "gzip"},
+		{520, "gzip"}, {522, "gzip"}, {530, "gzip"}, {200, "gzip"}, {204, "gzip"}} {
 		if c.Rejected(tc.status, tc.sent) {
 			t.Errorf("status %d for %q treated as a rejection", tc.status, tc.sent)
 		}

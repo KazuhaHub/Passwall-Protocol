@@ -126,19 +126,24 @@ const SyncGzipCooldown = time.Hour
 //   - A request is compressed only when the agent declared CapabilitySyncGzip
 //     and the state says gzip.
 //   - Any non-2xx response to a compressed request that is not a clear
-//     panel-side transient means the path did not take the coding: Rejected
-//     returns true, the agent sends the SAME request once more in plain, and
-//     gzip stays off for SyncGzipCooldown. The transients are 429, 500, 503 and
-//     504 (and a request that got no response at all): they say the panel is
-//     busy or down, not that it refuses the coding, so they change nothing.
-//     Everything else counts, 400 and 415 but also 401, 403, 406, 411, 413, 501
-//     and 502, because a WAF or reverse proxy that passes plain POSTs (so the
-//     panel's 2xx advertises gzip) may refuse Content-Encoding with any of them.
-//     If the plain retry fails with the same status the coding was not the
-//     problem; the cooldown then merely keeps the agent plain for an hour, so a
-//     bad credential costs one extra request on the first round and none after. Advertisements during
-//     the cooldown are ignored, so the retry's own 2xx cannot switch it back
-//     on. After the cooldown a later 2xx that advertises gzip re-enables it.
+//     transient means the path did not take the coding: Rejected returns true,
+//     the agent sends the SAME request once more in plain, and gzip stays off
+//     for SyncGzipCooldown. The transients are 429, 500, 502, 503, 504 and the
+//     520-530 range a CDN in front of the panel answers while the origin is
+//     unreachable (and a request that got no response at all): they say the
+//     panel is busy, restarting or down, not that it refuses the coding, so
+//     they change nothing. Everything else counts, 400 and 415 but also 401,
+//     403, 406, 411, 413 and 501, because a WAF or reverse proxy that passes
+//     plain POSTs (so the panel's 2xx advertises gzip) may refuse
+//     Content-Encoding with any of them.
+//   - The cooldown does not forget what the panel advertised: advertisements
+//     during it are ignored (so the plain retry's own 2xx cannot switch gzip
+//     back on), and when it ends the agent tries gzip again on what it last
+//     learned. Waiting instead for a fresh advertisement would strand an agent
+//     whose plain reports keep failing (a body over a proxy's plain size limit)
+//     plain for good, since no 2xx would ever come. A path that still refuses
+//     the coding costs one extra request per cooldown; a bad credential, one
+//     extra request per cooldown as well.
 //
 // The clock is a parameter so that tests can move it. It is not safe for
 // concurrent use.
@@ -181,19 +186,26 @@ func (c *SyncCompression) ObserveResponse(status int, acceptEncoding string) {
 // Rejected is called with the status of a response to a request sent with
 // sentEncoding. It returns true when the request should be repeated once in
 // plain, and has then switched gzip off for SyncGzipCooldown. It is true for a
-// gzip request answered with any non-2xx status except the transients 429, 500,
-// 503 and 504; never for a plain request or a 2xx.
+// gzip request answered with any non-2xx status except the transients (see
+// syncTransient); never for a plain request or a 2xx.
 func (c *SyncCompression) Rejected(status int, sentEncoding string) bool {
-	if sentEncoding != SyncEncodingGzip || (status >= 200 && status <= 299) {
+	if sentEncoding != SyncEncodingGzip || (status >= 200 && status <= 299) || syncTransient(status) {
 		return false
 	}
-	switch status {
-	case 429, 500, 503, 504:
-		return false
-	}
-	c.accepts = false
 	c.until = c.now().Add(SyncGzipCooldown)
 	return true
+}
+
+// syncTransient reports a status that says the panel is busy, restarting or
+// unreachable rather than that the path refuses a coding: 429, 500, 502, 503,
+// 504, and 520-530, which CDNs (Cloudflare among them) answer when the origin
+// cannot be reached.
+func syncTransient(status int) bool {
+	switch status {
+	case 429, 500, 502, 503, 504:
+		return true
+	}
+	return status >= 520 && status <= 530
 }
 
 // AcceptsSyncGzip reads an Accept-Encoding header value and says whether it
