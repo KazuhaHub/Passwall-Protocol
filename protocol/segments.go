@@ -109,6 +109,9 @@ type Client struct {
 	// ExpiresAtMS is epoch milliseconds; 0 means never.
 	ExpiresAtMS int64      `json:"expires_at_ms"`
 	Credentials Credential `json:"credentials"`
+	// SourceGuard restricts where this client's connections may come from,
+	// gated by CapabilitySourceGuard (see sourceguard.go). Nil sends nothing.
+	SourceGuard *ClientSourceGuard `json:"source_guard,omitempty"`
 }
 
 // DirectivesBody carries the values that need a cross-agent sum.
