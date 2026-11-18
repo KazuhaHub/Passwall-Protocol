@@ -111,7 +111,7 @@ func SyncEncodingFromHeaders(values []string) (string, error) {
 }
 
 // SyncGzipCooldown is how long an agent stays plain after the panel rejected a
-// compressed request with 400 or 415.
+// compressed request (see SyncCompression).
 const SyncGzipCooldown = time.Hour
 
 // SyncCompression is the agent's side of the negotiation, as a state machine.
@@ -125,9 +125,18 @@ const SyncGzipCooldown = time.Hour
 //     nothing about what the panel accepts.
 //   - A request is compressed only when the agent declared CapabilitySyncGzip
 //     and the state says gzip.
-//   - A 400 or 415 to a compressed request means the receiver did not take the
-//     coding: Rejected returns true, the agent sends the SAME request once more
-//     in plain, and gzip stays off for SyncGzipCooldown. Advertisements during
+//   - Any non-2xx response to a compressed request that is not a clear
+//     panel-side transient means the path did not take the coding: Rejected
+//     returns true, the agent sends the SAME request once more in plain, and
+//     gzip stays off for SyncGzipCooldown. The transients are 429, 500, 503 and
+//     504 (and a request that got no response at all): they say the panel is
+//     busy or down, not that it refuses the coding, so they change nothing.
+//     Everything else counts, 400 and 415 but also 401, 403, 406, 411, 413, 501
+//     and 502, because a WAF or reverse proxy that passes plain POSTs (so the
+//     panel's 2xx advertises gzip) may refuse Content-Encoding with any of them.
+//     If the plain retry fails with the same status the coding was not the
+//     problem; the cooldown then merely keeps the agent plain for an hour, so a
+//     bad credential costs one extra request on the first round and none after. Advertisements during
 //     the cooldown are ignored, so the retry's own 2xx cannot switch it back
 //     on. After the cooldown a later 2xx that advertises gzip re-enables it.
 //
@@ -171,9 +180,15 @@ func (c *SyncCompression) ObserveResponse(status int, acceptEncoding string) {
 
 // Rejected is called with the status of a response to a request sent with
 // sentEncoding. It returns true when the request should be repeated once in
-// plain, and has then switched gzip off for SyncGzipCooldown.
+// plain, and has then switched gzip off for SyncGzipCooldown. It is true for a
+// gzip request answered with any non-2xx status except the transients 429, 500,
+// 503 and 504; never for a plain request or a 2xx.
 func (c *SyncCompression) Rejected(status int, sentEncoding string) bool {
-	if sentEncoding != SyncEncodingGzip || (status != 400 && status != 415) {
+	if sentEncoding != SyncEncodingGzip || (status >= 200 && status <= 299) {
+		return false
+	}
+	switch status {
+	case 429, 500, 503, 504:
 		return false
 	}
 	c.accepts = false

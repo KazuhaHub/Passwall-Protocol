@@ -292,7 +292,7 @@ func TestSyncCompressionStateMachine(t *testing.T) {
 	}
 
 	// A 400 or 415 to a gzip request: one plain retry, then off for an hour.
-	for _, status := range []int{400, 415} {
+	for _, status := range []int{400, 401, 403, 404, 406, 411, 413, 415, 501, 502} {
 		c.ObserveResponse(200, "gzip")
 		if !c.Rejected(status, "gzip") || c.RequestEncoding() != "" {
 			t.Fatalf("a %d to a gzip request did not fall back to plain", status)
@@ -318,7 +318,7 @@ func TestSyncCompressionStateMachine(t *testing.T) {
 	for _, tc := range []struct {
 		status int
 		sent   string
-	}{{400, ""}, {415, ""}, {500, "gzip"}, {200, "gzip"}, {413, "gzip"}} {
+	}{{400, ""}, {415, ""}, {403, ""}, {500, "gzip"}, {503, "gzip"}, {504, "gzip"}, {429, "gzip"}, {200, "gzip"}, {204, "gzip"}} {
 		if c.Rejected(tc.status, tc.sent) {
 			t.Errorf("status %d for %q treated as a rejection", tc.status, tc.sent)
 		}

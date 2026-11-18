@@ -470,9 +470,11 @@ capability) lets either side send a body with `Content-Encoding: gzip`.
   not negotiate. The agent's state is a small machine (`SyncCompression`, with an
   injectable clock): it starts plain; **only a 2xx response changes it, and its
   `Accept-Encoding` replaces the state (absent means plain)**; a non-2xx response
-  (a 5xx included) or a request that got no response leaves it as it was. On a 400
-  or 415 to a compressed request the agent repeats the same request once in
-  plain, and gzip stays **off for one hour** (`SyncGzipCooldown`): advertisements
+  (a 5xx included) or a request that got no response leaves it as it was. On any
+  non-2xx response to a compressed request other than the transients 429, 500,
+  503 and 504 (400, 401, 403, 406, 411, 413, 415, 501, 502, ...; a WAF or proxy
+  may refuse the coding with any of them) the agent repeats the same request once
+  in plain, and gzip stays **off for one hour** (`SyncGzipCooldown`): advertisements
   during the cooldown, the retry's own included, are ignored, and a later 2xx
   that advertises gzip after it re-enables compression (`Rejected`). Nothing in
   the body changes, and segment ETags are taken over the
