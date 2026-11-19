@@ -470,11 +470,21 @@ capability) lets either side send a body with `Content-Encoding: gzip`.
   not negotiate. The agent's state is a small machine (`SyncCompression`, with an
   injectable clock): it starts plain; **only a 2xx response changes it, and its
   `Accept-Encoding` replaces the state (absent means plain)**; a non-2xx response
-  (a 5xx included) or a request that got no response leaves it as it was. On a 400
-  or 415 to a compressed request the agent repeats the same request once in
-  plain, and gzip stays **off for one hour** (`SyncGzipCooldown`): advertisements
-  during the cooldown, the retry's own included, are ignored, and a later 2xx
-  that advertises gzip after it re-enables compression (`Rejected`). Nothing in
+  or a request that got no response leaves it as it was, apart from the plain
+  resend below. On any
+  non-2xx response to a compressed request other than the transients (408, 429,
+  500, 502, 503, 504, 520-530) and 401/407, the agent resends the same request
+  once in plain (`Rejected`). Only if that plain resend succeeds was the coding the
+  problem: gzip then stays **off for one hour** (`SyncGzipCooldown`, started by
+  `PlainRetried`). If it fails too, nothing changes, so an unrelated refusal
+  never costs an hour without compression. During the cooldown an advertisement
+  is ignored but a 2xx without one still switches gzip off (a panel rolled back
+  to one without gzip); when the cooldown ends the agent tries gzip again on what
+  it last learned. The cost of a refusal that has nothing to do with the coding
+  and keeps coming (an invalid report, a WAF blocking everything) is two requests
+  a round instead of one. The state lives in the agent's memory and starts plain
+  at every start. The meaning of `Rejected` changed in v0.10.1: it no longer
+  starts the cooldown, `PlainRetried` does. Nothing in
   the body changes, and segment ETags are taken over the
   canonical decoded bytes, so compression never moves a validator.
 - **Two limits.** `MaxSyncWireBytes` (16 MiB, the old `MaxSyncBodyBytes`) bounds
