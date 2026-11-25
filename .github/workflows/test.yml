@@ -43,13 +43,18 @@ jobs:
           # tag. The whole repository is a few hundred KB.
           fetch-depth: 0
 
-      # cache: false. The module is stdlib-only, so there is no go.sum to key on
-      # (keying on one warned "Restore cache failed" every run) and nothing to
-      # download. A cache would hold only the compiled standard library, about
-      # 120 MB for race and vet. Runs here are few and often concurrent, and
-      # GitHub evicts a cache after 7 idle days, so most runs would miss and
-      # then pay to upload it. If runs become daily, key it on go.mod: the
-      # compiled stdlib goes stale only when the go line moves.
+      # The race and consumer toolchain steps compile the standard library
+      # into separate build-cache entries. Use go.mod and this workflow in
+      # the key so it moves with the floor or either consumer toolchain.
+      # Only full runs save, so a PR cannot seed a cache without the consumer
+      # builds. Test invocations still run uncached under -count=1.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: build-cache
+        with:
+          path: ~/.cache/go-build
+          key: protocol-go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', '.github/workflows/test.yml') }}
+
+      # The default setup cache expects go.sum, and this module is stdlib-only.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -228,3 +233,12 @@ jobs:
             GOTOOLCHAIN=$toolchain go version
             GOTOOLCHAIN=$toolchain GOWORK=off go test -count=1 ./...
           done
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: >-
+          steps.build-cache.outputs.cache-hit != 'true' &&
+          (github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
