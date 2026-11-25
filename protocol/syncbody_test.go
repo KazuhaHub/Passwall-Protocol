@@ -198,14 +198,17 @@ func (failingReader) Read([]byte) (int, error) { return 0, errors.New("boom") }
 func TestSyncBodyBombIsRefusedWithoutAllocatingItsSize(t *testing.T) {
 	const bombSize, limit = 64 << 20, 1 << 20
 	var out bytes.Buffer
-	w, err := gzip.NewWriterLevel(&out, gzip.BestCompression)
+	// This fixture tests decoding and keeps the same decoded and wire bounds.
+	w, err := gzip.NewWriterLevel(&out, gzip.BestSpeed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := io.CopyN(w, zeros{}, bombSize); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	bomb := out.Bytes()
 	if len(bomb) > 1<<20 {
 		t.Fatalf("test bomb is not a bomb: %d bytes", len(bomb))
