@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"reflect"
 	"slices"
@@ -149,19 +150,14 @@ func (r *byteReader) matcher() DestinationMatcher {
 	return m
 }
 
-var fuzzNonTrivial int
-
 // checkIntersect is the property the compiler relies on: the result matches a
 // connection exactly when both operands do, and when it is inexact it never
 // matches less.
-func checkIntersect(t *testing.T, data []byte) {
+func checkIntersect(t *testing.T, data []byte) bool {
 	t.Helper()
 	r := &byteReader{data: data}
 	a, b := r.matcher(), r.matcher()
 	result, exact := IntersectDestinations(a, b)
-	if exact && !result.Never {
-		fuzzNonTrivial++
-	}
 	again, againExact := IntersectDestinations(a, b)
 	if !reflect.DeepEqual(result, again) || exact != againExact {
 		t.Fatalf("not deterministic for %+v and %+v", a, b)
@@ -197,6 +193,7 @@ func checkIntersect(t *testing.T, data []byte) {
 			}
 		}
 	}
+	return exact && !result.Never
 }
 
 func cutEntry(entry string) (kind, value string, ok bool) {
@@ -223,17 +220,36 @@ func FuzzIntersect(fuzz *testing.F) {
 // The seeds above are few; this walks a fixed pseudo-random stream through the
 // same property, so the ordinary test run covers it too.
 func TestIntersectAgainstTheReferenceMatcher(t *testing.T) {
+	const pairs, batchSize = 400, 50
 	rng := rand.New(rand.NewPCG(1, 2))
-	for i := 0; i < 400; i++ {
-		data := make([]byte, 40)
-		for j := range data {
-			data[j] = byte(rng.Uint32())
+	// Draw the same stream in order before running the independent checks.
+	var inputs [pairs][40]byte
+	for i := range inputs {
+		for j := range inputs[i] {
+			inputs[i][j] = byte(rng.Uint32())
 		}
-		checkIntersect(t, data)
 	}
+	var nonTrivial [pairs / batchSize]int
+	t.Run("batches", func(t *testing.T) {
+		for batch := range nonTrivial {
+			first := batch * batchSize
+			t.Run(fmt.Sprintf("%03d-%03d", first, first+batchSize-1), func(t *testing.T) {
+				t.Parallel()
+				for i := first; i < first+batchSize; i++ {
+					if checkIntersect(t, inputs[i][:]) {
+						nonTrivial[batch]++
+					}
+				}
+			})
+		}
+	})
 	// A property that only ever saw empty intersections would prove little.
-	if fuzzNonTrivial < 40 {
-		t.Fatalf("only %d of the generated pairs had a non-empty exact intersection", fuzzNonTrivial)
+	total := 0
+	for _, count := range nonTrivial {
+		total += count
 	}
-	t.Logf("%d non-empty exact intersections checked", fuzzNonTrivial)
+	if total < 40 {
+		t.Fatalf("only %d of the generated pairs had a non-empty exact intersection", total)
+	}
+	t.Logf("%d non-empty exact intersections checked", total)
 }

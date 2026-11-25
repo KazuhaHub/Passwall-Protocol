@@ -564,10 +564,14 @@ only where its engine can enforce the guard.
 ## Development
 
 ```bash
-go test ./...          # unit and conformance
-go test -race ./...
-go vet ./...
+GOWORK=off go test -race -count=1 ./...  # unit and conformance, as in CI
+GOWORK=off go vet ./...
+(cd harness && GOWORK=off go test -count=1 ./...)
 ```
+
+The reference matcher checks the same 400 deterministic inputs in parallel
+batches. The gzip allocation tests stay serial because they measure
+process-wide allocations.
 
 Nothing here talks to the network, a database or a filesystem.
 
