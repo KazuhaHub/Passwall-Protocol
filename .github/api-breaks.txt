@@ -14,3 +14,7 @@
 # Resolved []string makes MatchInput incomparable (== and map keys no longer
 # compile). The panel and node only pass it by value to MatchDestination.
 - ./protocol.MatchInput: old is comparable, new is not
+
+# Addresses []string makes NetworkInterfaceObservation incomparable. Neither the
+# panel nor the node compares interface observations or uses them as map keys.
+- ./protocol.NetworkInterfaceObservation: old is comparable, new is not

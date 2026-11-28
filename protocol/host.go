@@ -1,5 +1,10 @@
 package protocol
 
+import (
+	"net/netip"
+	"sort"
+)
+
 // HostObservation is the agent's host-level telemetry: what the machine it runs
 // on looks like right now, in counters and gauges, and never in desired state.
 //
@@ -239,9 +244,13 @@ type FilesystemObservation struct {
 
 // NetworkObservation is the per-interface counter set.
 //
-// No MAC address, no IP address and no routing table: the panel needs throughput
-// and error rates, and those three are exactly the host-identifying details the
-// minimal-disclosure rule excludes.
+// No MAC address and no routing table: the panel needs throughput and error
+// rates, and those are host-identifying details the minimal-disclosure rule
+// excludes. Interface addresses are the one exception, and only behind
+// CapabilityHostInterfaceAddresses (see NetworkInterfaceObservation.Addresses):
+// an operator diagnosing a node needs to see which address sits on which link,
+// and a node with the source guard already discloses its public addresses in
+// NodeReport.InterfaceAddresses.
 type NetworkObservation struct {
 	CounterEpoch string `json:"counter_epoch"`
 	// The default interface is reported by NAME only, selected from the fixed
@@ -280,6 +289,88 @@ type NetworkInterfaceObservation struct {
 	TXPackets uint64 `json:"tx_packets"`
 	TXErrors  uint64 `json:"tx_errors"`
 	TXDropped uint64 `json:"tx_dropped"`
+
+	// Addresses are the interface's unicast addresses with their prefix length,
+	// IPv4 and IPv6, public and private: "203.0.113.7/24", "10.0.0.5/8",
+	// "2001:db8::1/64". Each entry is in canonical netip.Prefix form keeping the
+	// host bits (not masked), with no zone and no IPv4-mapped IPv6 address.
+	// IPv6 link-local addresses (fe80::/10) are excluded: every IPv6 interface
+	// carries one, they are commonly derived from the MAC, and they say nothing
+	// an operator acts on. Loopback, multicast and unspecified addresses are not
+	// unicast addresses of a link and are excluded too.
+	//
+	// Sorted ascending by address and unique by address (one prefix per
+	// address; a producer that sees several keeps the shortest). At most
+	// MaxAddressesPerInterface per interface, and at most MaxNetworkAddresses
+	// over the whole observation, spent in Interfaces order: an interface keeps
+	// its lowest addresses up to the per-interface bound or what is left of the
+	// observation bound, whichever is smaller, and a later interface gets what
+	// remains. An interface whose list was cut sets AddressesTruncated.
+	//
+	// Sent only by an agent that declared CapabilityHostInterfaceAddresses, which
+	// is what lets the panel tell "this interface has no address" (capability,
+	// empty list) from "this agent does not report addresses" (no capability).
+	// A sample whose address read failed carries UnavailableNetAddresses.
+	Addresses []string `json:"addresses,omitempty"`
+	// AddressesTruncated says Addresses is not the interface's whole list: a
+	// bound cut it, possibly to nothing. Without it an empty or short list on a
+	// capable agent is the complete answer.
+	AddressesTruncated bool `json:"addresses_truncated,omitempty"`
+}
+
+// IsInterfaceUnicastAddr reports whether addr may appear in
+// NetworkInterfaceObservation.Addresses: a valid address with no zone, not
+// IPv4-mapped, and not unspecified, loopback, multicast, the IPv4 broadcast
+// address or IPv6 link-local.
+func IsInterfaceUnicastAddr(addr netip.Addr) bool {
+	return validInterfaceUnicast(addr) == nil
+}
+
+// InterfaceAddressList turns one interface's prefixes into the form
+// NetworkInterfaceObservation.Addresses requires: it drops what
+// IsInterfaceUnicastAddr refuses and IPv4-mapped forms are unmapped first,
+// sorts ascending by address, keeps the shortest prefix of each address, and
+// cuts the list at limit (at most MaxAddressesPerInterface). truncated reports
+// a cut. The list is nil when nothing is left.
+func InterfaceAddressList(prefixes []netip.Prefix, limit int) (addresses []string, truncated bool) {
+	if limit > MaxAddressesPerInterface {
+		limit = MaxAddressesPerInterface
+	}
+	kept := make([]netip.Prefix, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		if !prefix.IsValid() {
+			continue
+		}
+		addr := prefix.Addr()
+		bits := prefix.Bits()
+		if addr.Is4In6() {
+			addr = addr.Unmap()
+			if bits -= 96; bits < 0 {
+				continue
+			}
+		}
+		addr = addr.WithZone("")
+		if !IsInterfaceUnicastAddr(addr) {
+			continue
+		}
+		kept = append(kept, netip.PrefixFrom(addr, bits))
+	}
+	sort.Slice(kept, func(left, right int) bool {
+		if order := kept[left].Addr().Compare(kept[right].Addr()); order != 0 {
+			return order < 0
+		}
+		return kept[left].Bits() < kept[right].Bits()
+	})
+	for index, prefix := range kept {
+		if index > 0 && kept[index-1].Addr() == prefix.Addr() {
+			continue
+		}
+		if len(addresses) >= limit {
+			return addresses, true
+		}
+		addresses = append(addresses, prefix.String())
+	}
+	return addresses, false
 }
 
 // OperationalState is the restricted enumeration of the sysfs operstate file.
@@ -404,6 +495,17 @@ type TuningObservation struct {
 // expressed by the optional sections and Unavailable, never by the capability.
 const CapabilityHostTelemetry = "host.telemetry.v1"
 
+// CapabilityHostInterfaceAddresses says the agent fills
+// NetworkInterfaceObservation.Addresses in its host samples. It is advertised
+// only together with CapabilityHostTelemetry, and like it is not an upgrade
+// capability.
+//
+// IT GATES SENDING. ValidateNodeReport refuses a sample that carries addresses
+// without it, so a panel can rely on the capability to decide whether an empty
+// address list is a fact or an absence. A panel built before the field ignores
+// it, as it ignores any unknown JSON field.
+const CapabilityHostInterfaceAddresses = "host.interface_addresses.v1"
+
 // IssueHostTelemetryFailed reports that a collection failed as a whole.
 //
 // ONE DURABLE ISSUE PER FAILURE EPISODE, not per round: a collector that has
@@ -441,4 +543,9 @@ const (
 	UnavailableTuningQdisc      = "tuning.default_qdisc"
 	UnavailablePlatformKernel   = "platform.kernel"
 	UnavailablePlatformDistro   = "platform.distribution"
+
+	// UnavailableNetAddresses says an agent that declared
+	// CapabilityHostInterfaceAddresses could not read its interface addresses
+	// for this sample, so the empty lists in it are not facts.
+	UnavailableNetAddresses = "network.addresses"
 )

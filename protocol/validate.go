@@ -245,7 +245,22 @@ func ValidateNodeReport(report NodeReport) error {
 	if err := ValidateHostObservation(*report.Host); err != nil {
 		return fmt.Errorf("host: %w", err)
 	}
+	if hostCarriesAddresses(*report.Host) && !hasCapability(report.Capabilities, CapabilityHostInterfaceAddresses) {
+		return fmt.Errorf("host interface addresses without %s capability", CapabilityHostInterfaceAddresses)
+	}
 	return nil
+}
+
+func hostCarriesAddresses(host HostObservation) bool {
+	if host.Network == nil {
+		return false
+	}
+	for _, networkInterface := range host.Network.Interfaces {
+		if len(networkInterface.Addresses) > 0 || networkInterface.AddressesTruncated {
+			return true
+		}
+	}
+	return false
 }
 
 func hasCapability(capabilities []string, want string) bool {
@@ -970,10 +985,15 @@ func validateNetworkObservation(network NetworkObservation) error {
 	if len(network.Interfaces) > MaxNetworkInterfaces {
 		return fmt.Errorf("network holds %d interfaces, at most %d are allowed", len(network.Interfaces), MaxNetworkInterfaces)
 	}
+	totalAddresses := 0
 	for _, networkInterface := range network.Interfaces {
 		if err := validateNetworkInterface(networkInterface); err != nil {
 			return err
 		}
+		totalAddresses += len(networkInterface.Addresses)
+	}
+	if totalAddresses > MaxNetworkAddresses {
+		return fmt.Errorf("network holds %d interface addresses, at most %d are allowed", totalAddresses, MaxNetworkAddresses)
 	}
 	seenNames := make(map[string]struct{}, len(network.Interfaces))
 	seenIndexes := make(map[int]struct{}, len(network.Interfaces))
@@ -1032,6 +1052,61 @@ func validateNetworkInterface(networkInterface NetworkInterfaceObservation) erro
 		if err := withinInt64("interfaces[].counter "+field.name, field.value); err != nil {
 			return err
 		}
+	}
+	if networkInterface.AddressesTruncated && len(networkInterface.Addresses) == 0 {
+		// A list cut to nothing is legal (the observation bound ran out), so
+		// the flag stands alone; nothing else to check.
+		return nil
+	}
+	return validateInterfaceAddressList(networkInterface.Name, networkInterface.Addresses)
+}
+
+// validateInterfaceAddressList checks NetworkInterfaceObservation.Addresses.
+// The count and byte bounds come before any parsing.
+func validateInterfaceAddressList(name string, addresses []string) error {
+	if len(addresses) > MaxAddressesPerInterface {
+		return fmt.Errorf("interface %q has %d addresses, at most %d are allowed", name, len(addresses), MaxAddressesPerInterface)
+	}
+	for _, raw := range addresses {
+		if len(raw) == 0 || len(raw) > MaxInterfaceAddressBytes {
+			return fmt.Errorf("interface %q has an address of unsupported length", name)
+		}
+	}
+	var previous netip.Prefix
+	for index, raw := range addresses {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil || prefix.String() != raw {
+			return fmt.Errorf("interface %q: %q is not a canonical address/prefix-length", name, raw)
+		}
+		if err := validInterfaceUnicast(prefix.Addr()); err != nil {
+			return fmt.Errorf("interface %q: %q %w", name, raw, err)
+		}
+		if index > 0 {
+			switch order := previous.Addr().Compare(prefix.Addr()); {
+			case order == 0:
+				return fmt.Errorf("interface %q repeats address %q", name, prefix.Addr())
+			case order > 0:
+				return fmt.Errorf("interface %q addresses must be sorted ascending (%q before %q)", name, previous, raw)
+			}
+		}
+		previous = prefix
+	}
+	return nil
+}
+
+// validInterfaceUnicast explains why IsInterfaceUnicastAddr refuses addr.
+func validInterfaceUnicast(addr netip.Addr) error {
+	switch {
+	case !addr.IsValid():
+		return fmt.Errorf("is not an IP address")
+	case addr.Zone() != "" || addr.Is4In6():
+		return fmt.Errorf("must not carry a zone or be IPv4-mapped")
+	case addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast():
+		return fmt.Errorf("is not a unicast address of a link")
+	case addr.Is6() && addr.IsLinkLocalUnicast():
+		return fmt.Errorf("is an IPv6 link-local address, which is excluded")
+	case addr == netip.AddrFrom4([4]byte{255, 255, 255, 255}):
+		return fmt.Errorf("is the broadcast address")
 	}
 	return nil
 }
