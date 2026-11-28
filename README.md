@@ -561,6 +561,27 @@ only where its engine can enforce the guard.
   `ValidateNodeReportBase` refuses a partial report that carries them.
   `ValidateNodeReport` refuses them without the capability.
 
+## Interface addresses in host telemetry (v0.11.0)
+
+`NetworkInterfaceObservation.Addresses` lists each interface's unicast addresses
+for diagnostics, public and private, IPv4 and IPv6. It is gated by
+`host.interface_addresses.v1`, advertised only alongside `host.telemetry.v1`
+and not an upgrade capability. `ValidateNodeReport` refuses addresses without
+it, so a panel can tell "no address on this link" (capability, empty list) from
+"this agent does not report addresses" (no capability). A panel built before
+the field ignores it.
+
+- **Form.** Canonical `netip.Prefix` text with the host bits kept
+  (`10.0.0.5/8`, `2001:db8::1/64`): no zone, no IPv4-mapped IPv6, at most 64
+  bytes. Loopback, multicast, unspecified, `255.255.255.255` and IPv6
+  link-local (`fe80::/10`, often MAC-derived) are refused. IPv4 link-local,
+  private, CGNAT and documentation ranges are allowed.
+- **Order and bounds.** Sorted ascending by address, unique by address, at most
+  32 per interface and 256 over the observation. An agent with more keeps the
+  lowest in that order.
+- **Public addresses** for source sets remain `NodeReport.InterfaceAddresses`
+  (source guard); this field does not replace it.
+
 ## Development
 
 ```bash

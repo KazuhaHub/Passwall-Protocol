@@ -239,9 +239,13 @@ type FilesystemObservation struct {
 
 // NetworkObservation is the per-interface counter set.
 //
-// No MAC address, no IP address and no routing table: the panel needs throughput
-// and error rates, and those three are exactly the host-identifying details the
-// minimal-disclosure rule excludes.
+// No MAC address and no routing table: the panel needs throughput and error
+// rates, and those are host-identifying details the minimal-disclosure rule
+// excludes. Interface addresses are the one exception, and only behind
+// CapabilityHostInterfaceAddresses (see NetworkInterfaceObservation.Addresses):
+// an operator diagnosing a node needs to see which address sits on which link,
+// and the panel already knows the node's public addresses from
+// NodeReport.InterfaceAddresses.
 type NetworkObservation struct {
 	CounterEpoch string `json:"counter_epoch"`
 	// The default interface is reported by NAME only, selected from the fixed
@@ -280,6 +284,24 @@ type NetworkInterfaceObservation struct {
 	TXPackets uint64 `json:"tx_packets"`
 	TXErrors  uint64 `json:"tx_errors"`
 	TXDropped uint64 `json:"tx_dropped"`
+
+	// Addresses are the interface's unicast addresses with their prefix length,
+	// IPv4 and IPv6, public and private: "203.0.113.7/24", "10.0.0.5/8",
+	// "2001:db8::1/64". Each entry is in canonical netip.Prefix form keeping the
+	// host bits (not masked), with no zone and no IPv4-mapped IPv6 address.
+	// IPv6 link-local addresses (fe80::/10) are excluded: every IPv6 interface
+	// carries one, they are commonly derived from the MAC, and they say nothing
+	// an operator acts on. Loopback, multicast and unspecified addresses are not
+	// unicast addresses of a link and are excluded too.
+	//
+	// Sorted ascending by address then prefix length, unique by address, at most
+	// MaxAddressesPerInterface per interface and MaxNetworkAddresses over the
+	// whole observation; an agent with more keeps the lowest in that order.
+	//
+	// Sent only by an agent that declared CapabilityHostInterfaceAddresses, which
+	// is what lets the panel tell "this interface has no address" (capability,
+	// empty list) from "this agent does not report addresses" (no capability).
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 // OperationalState is the restricted enumeration of the sysfs operstate file.
@@ -403,6 +425,17 @@ type TuningObservation struct {
 // compilation purposes must not advertise this either. Field-level absence is
 // expressed by the optional sections and Unavailable, never by the capability.
 const CapabilityHostTelemetry = "host.telemetry.v1"
+
+// CapabilityHostInterfaceAddresses says the agent fills
+// NetworkInterfaceObservation.Addresses in its host samples. It is advertised
+// only together with CapabilityHostTelemetry, and like it is not an upgrade
+// capability.
+//
+// IT GATES SENDING. ValidateNodeReport refuses a sample that carries addresses
+// without it, so a panel can rely on the capability to decide whether an empty
+// address list is a fact or an absence. A panel built before the field ignores
+// it, as it ignores any unknown JSON field.
+const CapabilityHostInterfaceAddresses = "host.interface_addresses.v1"
 
 // IssueHostTelemetryFailed reports that a collection failed as a whole.
 //

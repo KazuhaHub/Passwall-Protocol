@@ -76,6 +76,18 @@ const (
 	MaxNetworkInterfaces = 32
 	// MaxInterfaceNameBytes bounds one interface name.
 	MaxInterfaceNameBytes = 64
+	// MaxAddressesPerInterface bounds NetworkInterfaceObservation.Addresses. A
+	// server with a routed block or several public addresses on one NIC fits;
+	// a host that assigns a whole range address by address is cut, and the
+	// panel is for diagnostics, not an address inventory.
+	MaxAddressesPerInterface = 32
+	// MaxNetworkAddresses bounds the addresses summed over every interface of
+	// one observation, so a full interface list of full address lists cannot
+	// spend a large share of MaxHostObservationBytes.
+	MaxNetworkAddresses = 256
+	// MaxInterfaceAddressBytes bounds one address entry: the longest canonical
+	// IPv6 prefix ("ffff:...:ffff/128", 43 bytes) with room to spare.
+	MaxInterfaceAddressBytes = 64
 	// MaxCongestionControls and MaxCongestionControlBytes bound the read-only
 	// congestion-control enumeration.
 	MaxCongestionControls     = 32
