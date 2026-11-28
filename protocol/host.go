@@ -301,6 +301,7 @@ type NetworkInterfaceObservation struct {
 	// Sent only by an agent that declared CapabilityHostInterfaceAddresses, which
 	// is what lets the panel tell "this interface has no address" (capability,
 	// empty list) from "this agent does not report addresses" (no capability).
+	// A sample whose address read failed carries UnavailableNetAddresses.
 	Addresses []string `json:"addresses,omitempty"`
 }
 
@@ -464,14 +465,18 @@ const (
 	UnavailableNetInterfaces    = "network.interfaces"
 	UnavailableNetDefaultRoute  = "network.default_route"
 	UnavailableNetLinkSpeed     = "network.link_speed"
-	UnavailableTCP              = "tcp"
-	UnavailableSockets          = "sockets"
-	UnavailableConntrack        = "conntrack"
-	UnavailableProcessAgent     = "process.agent"
-	UnavailableProcessCore      = "process.core"
-	UnavailableRuntimeSync      = "runtime.sync"
-	UnavailableTuningCC         = "tuning.tcp_congestion_control"
-	UnavailableTuningQdisc      = "tuning.default_qdisc"
-	UnavailablePlatformKernel   = "platform.kernel"
-	UnavailablePlatformDistro   = "platform.distribution"
+	// UnavailableNetAddresses says an agent that declared
+	// CapabilityHostInterfaceAddresses could not read its interface addresses
+	// for this sample, so the empty lists in it are not facts.
+	UnavailableNetAddresses   = "network.addresses"
+	UnavailableTCP            = "tcp"
+	UnavailableSockets        = "sockets"
+	UnavailableConntrack      = "conntrack"
+	UnavailableProcessAgent   = "process.agent"
+	UnavailableProcessCore    = "process.core"
+	UnavailableRuntimeSync    = "runtime.sync"
+	UnavailableTuningCC       = "tuning.tcp_congestion_control"
+	UnavailableTuningQdisc    = "tuning.default_qdisc"
+	UnavailablePlatformKernel = "platform.kernel"
+	UnavailablePlatformDistro = "platform.distribution"
 )
