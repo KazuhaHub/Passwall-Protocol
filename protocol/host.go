@@ -249,7 +249,7 @@ type FilesystemObservation struct {
 // excludes. Interface addresses are the one exception, and only behind
 // CapabilityHostInterfaceAddresses (see NetworkInterfaceObservation.Addresses):
 // an operator diagnosing a node needs to see which address sits on which link,
-// and the panel already knows the node's public addresses from
+// and a node with the source guard already discloses its public addresses in
 // NodeReport.InterfaceAddresses.
 type NetworkObservation struct {
 	CounterEpoch string `json:"counter_epoch"`
@@ -299,15 +299,23 @@ type NetworkInterfaceObservation struct {
 	// an operator acts on. Loopback, multicast and unspecified addresses are not
 	// unicast addresses of a link and are excluded too.
 	//
-	// Sorted ascending by address then prefix length, unique by address, at most
-	// MaxAddressesPerInterface per interface and MaxNetworkAddresses over the
-	// whole observation; an agent with more keeps the lowest in that order.
+	// Sorted ascending by address and unique by address (one prefix per
+	// address; a producer that sees several keeps the shortest). At most
+	// MaxAddressesPerInterface per interface, and at most MaxNetworkAddresses
+	// over the whole observation, spent in Interfaces order: an interface keeps
+	// its lowest addresses up to the per-interface bound or what is left of the
+	// observation bound, whichever is smaller, and a later interface gets what
+	// remains. An interface whose list was cut sets AddressesTruncated.
 	//
 	// Sent only by an agent that declared CapabilityHostInterfaceAddresses, which
 	// is what lets the panel tell "this interface has no address" (capability,
 	// empty list) from "this agent does not report addresses" (no capability).
 	// A sample whose address read failed carries UnavailableNetAddresses.
 	Addresses []string `json:"addresses,omitempty"`
+	// AddressesTruncated says Addresses is not the interface's whole list: a
+	// bound cut it, possibly to nothing. Without it an empty or short list on a
+	// capable agent is the complete answer.
+	AddressesTruncated bool `json:"addresses_truncated,omitempty"`
 }
 
 // IsInterfaceUnicastAddr reports whether addr may appear in
@@ -321,10 +329,10 @@ func IsInterfaceUnicastAddr(addr netip.Addr) bool {
 // InterfaceAddressList turns one interface's prefixes into the form
 // NetworkInterfaceObservation.Addresses requires: it drops what
 // IsInterfaceUnicastAddr refuses and IPv4-mapped forms are unmapped first,
-// sorts ascending by address then prefix length, keeps the first prefix of
-// each address, and cuts the list at limit (at most MaxAddressesPerInterface).
-// The result is nil when nothing is left.
-func InterfaceAddressList(prefixes []netip.Prefix, limit int) []string {
+// sorts ascending by address, keeps the shortest prefix of each address, and
+// cuts the list at limit (at most MaxAddressesPerInterface). truncated reports
+// a cut. The list is nil when nothing is left.
+func InterfaceAddressList(prefixes []netip.Prefix, limit int) (addresses []string, truncated bool) {
 	if limit > MaxAddressesPerInterface {
 		limit = MaxAddressesPerInterface
 	}
@@ -353,17 +361,16 @@ func InterfaceAddressList(prefixes []netip.Prefix, limit int) []string {
 		}
 		return kept[left].Bits() < kept[right].Bits()
 	})
-	var out []string
 	for index, prefix := range kept {
 		if index > 0 && kept[index-1].Addr() == prefix.Addr() {
 			continue
 		}
-		if len(out) >= limit {
-			break
+		if len(addresses) >= limit {
+			return addresses, true
 		}
-		out = append(out, prefix.String())
+		addresses = append(addresses, prefix.String())
 	}
-	return out
+	return addresses, false
 }
 
 // OperationalState is the restricted enumeration of the sysfs operstate file.

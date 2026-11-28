@@ -577,9 +577,11 @@ built before the field ignores it.
   bytes. Loopback, multicast, unspecified, `255.255.255.255` and IPv6
   link-local (`fe80::/10`, often MAC-derived) are refused. IPv4 link-local,
   private, CGNAT and documentation ranges are allowed.
-- **Order and bounds.** Sorted ascending by address, unique by address, at most
-  32 per interface and 256 over the observation. An agent with more keeps the
-  lowest in that order.
+- **Order and bounds.** Sorted ascending by address, one prefix per address
+  (the shortest). At most 32 per interface and 256 over the observation, the
+  latter spent in interface order: each interface keeps its lowest addresses
+  up to whichever bound is reached first. A cut list sets
+  `addresses_truncated`, so an empty or short list without it is complete.
 - **Public addresses** for source sets remain `NodeReport.InterfaceAddresses`
   (source guard); this field does not replace it.
 

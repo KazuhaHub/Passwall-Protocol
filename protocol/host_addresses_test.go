@@ -66,6 +66,14 @@ func TestInterfaceAddressesRejectMalformedLists(t *testing.T) {
 	}
 }
 
+func manyLongAddresses(count int) []string {
+	addresses := make([]string, count)
+	for index := range addresses {
+		addresses[index] = fmt.Sprintf("2001:db8:ffff:ffff:ffff:ffff:ffff:%x/128", 0xf000+index)
+	}
+	return addresses
+}
+
 func manyAddresses(count int) []string {
 	addresses := make([]string, count)
 	for index := range addresses {
@@ -92,6 +100,9 @@ func TestInterfaceAddressesBoundTheWholeObservation(t *testing.T) {
 		t.Fatalf("observation over MaxNetworkAddresses: %v", err)
 	}
 	sample.Network.Interfaces = sample.Network.Interfaces[:count-1]
+	for index := range sample.Network.Interfaces {
+		sample.Network.Interfaces[index].Addresses = manyLongAddresses(perInterface)
+	}
 	if err := ValidateHostObservation(sample); err != nil {
 		t.Fatalf("observation at MaxNetworkAddresses rejected: %v", err)
 	}
@@ -116,6 +127,17 @@ func TestValidateNodeReportTiesInterfaceAddressesToTheirCapability(t *testing.T)
 	report.Capabilities = append(report.Capabilities, CapabilityHostInterfaceAddresses)
 	if err := ValidateNodeReport(report); err != nil {
 		t.Fatalf("addresses with the capability rejected: %v", err)
+	}
+	// A cut-to-nothing list still discloses that the agent reports addresses.
+	report.Capabilities = []string{CapabilityHostTelemetry}
+	report.Host = hostPtr(hostSample())
+	report.Host.Network.Interfaces[0].AddressesTruncated = true
+	if err := ValidateNodeReport(report); err == nil {
+		t.Fatal("addresses_truncated without the capability was accepted")
+	}
+	report.Capabilities = append(report.Capabilities, CapabilityHostInterfaceAddresses)
+	if err := ValidateNodeReport(report); err != nil {
+		t.Fatalf("a list cut to nothing rejected: %v", err)
 	}
 	// The capability with no address anywhere is a host whose links carry none.
 	report.Host = hostPtr(hostSample())
@@ -145,7 +167,10 @@ func TestInterfaceAddressListProducesAConformingList(t *testing.T) {
 		netip.MustParsePrefix("224.0.0.1/32"),
 		{},
 	}
-	got := InterfaceAddressList(prefixes, MaxAddressesPerInterface)
+	got, truncated := InterfaceAddressList(prefixes, MaxAddressesPerInterface)
+	if truncated {
+		t.Fatal("a list within the bound was marked truncated")
+	}
 	want := []string{"10.0.0.5/8", "203.0.113.7/24", "2001:db8::1/64"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("InterfaceAddressList = %v, want %v", got, want)
@@ -153,17 +178,20 @@ func TestInterfaceAddressListProducesAConformingList(t *testing.T) {
 	if err := ValidateHostObservation(hostSampleWithAddresses(got...)); err != nil {
 		t.Fatalf("helper output rejected: %v", err)
 	}
-	if got := InterfaceAddressList(prefixes, 1); len(got) != 1 || got[0] != "10.0.0.5/8" {
-		t.Fatalf("limit 1 = %v, want the lowest address", got)
+	if got, truncated := InterfaceAddressList(prefixes, 1); len(got) != 1 || got[0] != "10.0.0.5/8" || !truncated {
+		t.Fatalf("limit 1 = %v truncated=%v, want the lowest address, truncated", got, truncated)
 	}
-	if got := InterfaceAddressList([]netip.Prefix{netip.MustParsePrefix("fe80::1/64")}, 8); got != nil {
-		t.Fatalf("nothing reportable = %#v, want nil", got)
+	if got, truncated := InterfaceAddressList(prefixes, 0); got != nil || !truncated {
+		t.Fatalf("limit 0 = %v truncated=%v, want nothing, truncated", got, truncated)
+	}
+	if got, truncated := InterfaceAddressList([]netip.Prefix{netip.MustParsePrefix("fe80::1/64")}, 8); got != nil || truncated {
+		t.Fatalf("nothing reportable = %#v truncated=%v, want nil", got, truncated)
 	}
 	many := make([]netip.Prefix, 0, MaxAddressesPerInterface+5)
 	for _, raw := range manyAddresses(MaxAddressesPerInterface + 5) {
 		many = append(many, netip.MustParsePrefix(raw))
 	}
-	if got := InterfaceAddressList(many, 1000); len(got) != MaxAddressesPerInterface {
-		t.Fatalf("limit above the protocol bound kept %d", len(got))
+	if got, truncated := InterfaceAddressList(many, 1000); len(got) != MaxAddressesPerInterface || !truncated {
+		t.Fatalf("limit above the protocol bound kept %d truncated=%v", len(got), truncated)
 	}
 }

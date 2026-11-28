@@ -256,7 +256,7 @@ func hostCarriesAddresses(host HostObservation) bool {
 		return false
 	}
 	for _, networkInterface := range host.Network.Interfaces {
-		if len(networkInterface.Addresses) > 0 {
+		if len(networkInterface.Addresses) > 0 || networkInterface.AddressesTruncated {
 			return true
 		}
 	}
@@ -1052,6 +1052,11 @@ func validateNetworkInterface(networkInterface NetworkInterfaceObservation) erro
 		if err := withinInt64("interfaces[].counter "+field.name, field.value); err != nil {
 			return err
 		}
+	}
+	if networkInterface.AddressesTruncated && len(networkInterface.Addresses) == 0 {
+		// A list cut to nothing is legal (the observation bound ran out), so
+		// the flag stands alone; nothing else to check.
+		return nil
 	}
 	return validateInterfaceAddressList(networkInterface.Name, networkInterface.Addresses)
 }
