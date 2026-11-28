@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -130,5 +131,39 @@ func TestInterfaceAddressesAreOmittedWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(body), `"addresses"`) {
 		t.Fatalf("an interface without addresses must encode as before: %s", body)
+	}
+}
+
+func TestInterfaceAddressListProducesAConformingList(t *testing.T) {
+	prefixes := []netip.Prefix{
+		netip.MustParsePrefix("2001:db8::1/64"),
+		netip.MustParsePrefix("203.0.113.7/24"),
+		netip.MustParsePrefix("fe80::1/64"),
+		netip.MustParsePrefix("127.0.0.1/8"),
+		netip.MustParsePrefix("::ffff:10.0.0.5/104"),
+		netip.MustParsePrefix("10.0.0.5/24"),
+		netip.MustParsePrefix("224.0.0.1/32"),
+		{},
+	}
+	got := InterfaceAddressList(prefixes, MaxAddressesPerInterface)
+	want := []string{"10.0.0.5/8", "203.0.113.7/24", "2001:db8::1/64"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("InterfaceAddressList = %v, want %v", got, want)
+	}
+	if err := ValidateHostObservation(hostSampleWithAddresses(got...)); err != nil {
+		t.Fatalf("helper output rejected: %v", err)
+	}
+	if got := InterfaceAddressList(prefixes, 1); len(got) != 1 || got[0] != "10.0.0.5/8" {
+		t.Fatalf("limit 1 = %v, want the lowest address", got)
+	}
+	if got := InterfaceAddressList([]netip.Prefix{netip.MustParsePrefix("fe80::1/64")}, 8); got != nil {
+		t.Fatalf("nothing reportable = %#v, want nil", got)
+	}
+	many := make([]netip.Prefix, 0, MaxAddressesPerInterface+5)
+	for _, raw := range manyAddresses(MaxAddressesPerInterface + 5) {
+		many = append(many, netip.MustParsePrefix(raw))
+	}
+	if got := InterfaceAddressList(many, 1000); len(got) != MaxAddressesPerInterface {
+		t.Fatalf("limit above the protocol bound kept %d", len(got))
 	}
 }

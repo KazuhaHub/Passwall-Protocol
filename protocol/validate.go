@@ -1089,17 +1089,18 @@ func validateInterfaceAddressList(name string, addresses []string) error {
 	return nil
 }
 
-// validInterfaceUnicast is the filter NetworkInterfaceObservation.Addresses is
-// defined by.
+// validInterfaceUnicast explains why IsInterfaceUnicastAddr refuses addr.
 func validInterfaceUnicast(addr netip.Addr) error {
 	switch {
+	case !addr.IsValid():
+		return fmt.Errorf("is not an IP address")
 	case addr.Zone() != "" || addr.Is4In6():
 		return fmt.Errorf("must not carry a zone or be IPv4-mapped")
 	case addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast():
 		return fmt.Errorf("is not a unicast address of a link")
 	case addr.Is6() && addr.IsLinkLocalUnicast():
 		return fmt.Errorf("is an IPv6 link-local address, which is excluded")
-	case addr.Is4() && addr == netip.AddrFrom4([4]byte{255, 255, 255, 255}):
+	case addr == netip.AddrFrom4([4]byte{255, 255, 255, 255}):
 		return fmt.Errorf("is the broadcast address")
 	}
 	return nil

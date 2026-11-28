@@ -1,5 +1,10 @@
 package protocol
 
+import (
+	"net/netip"
+	"sort"
+)
+
 // HostObservation is the agent's host-level telemetry: what the machine it runs
 // on looks like right now, in counters and gauges, and never in desired state.
 //
@@ -303,6 +308,62 @@ type NetworkInterfaceObservation struct {
 	// empty list) from "this agent does not report addresses" (no capability).
 	// A sample whose address read failed carries UnavailableNetAddresses.
 	Addresses []string `json:"addresses,omitempty"`
+}
+
+// IsInterfaceUnicastAddr reports whether addr may appear in
+// NetworkInterfaceObservation.Addresses: a valid address with no zone, not
+// IPv4-mapped, and not unspecified, loopback, multicast, the IPv4 broadcast
+// address or IPv6 link-local.
+func IsInterfaceUnicastAddr(addr netip.Addr) bool {
+	return validInterfaceUnicast(addr) == nil
+}
+
+// InterfaceAddressList turns one interface's prefixes into the form
+// NetworkInterfaceObservation.Addresses requires: it drops what
+// IsInterfaceUnicastAddr refuses and IPv4-mapped forms are unmapped first,
+// sorts ascending by address then prefix length, keeps the first prefix of
+// each address, and cuts the list at limit (at most MaxAddressesPerInterface).
+// The result is nil when nothing is left.
+func InterfaceAddressList(prefixes []netip.Prefix, limit int) []string {
+	if limit > MaxAddressesPerInterface {
+		limit = MaxAddressesPerInterface
+	}
+	kept := make([]netip.Prefix, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		if !prefix.IsValid() {
+			continue
+		}
+		addr := prefix.Addr()
+		bits := prefix.Bits()
+		if addr.Is4In6() {
+			addr = addr.Unmap()
+			if bits -= 96; bits < 0 {
+				continue
+			}
+		}
+		addr = addr.WithZone("")
+		if !IsInterfaceUnicastAddr(addr) {
+			continue
+		}
+		kept = append(kept, netip.PrefixFrom(addr, bits))
+	}
+	sort.Slice(kept, func(left, right int) bool {
+		if order := kept[left].Addr().Compare(kept[right].Addr()); order != 0 {
+			return order < 0
+		}
+		return kept[left].Bits() < kept[right].Bits()
+	})
+	var out []string
+	for index, prefix := range kept {
+		if index > 0 && kept[index-1].Addr() == prefix.Addr() {
+			continue
+		}
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, prefix.String())
+	}
+	return out
 }
 
 // OperationalState is the restricted enumeration of the sysfs operstate file.
